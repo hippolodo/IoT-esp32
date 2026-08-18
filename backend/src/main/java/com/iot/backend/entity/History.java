@@ -1,36 +1,37 @@
 package com.iot.backend.entity;
 
 import jakarta.persistence.*;
-import lombok.*;
-import org.hibernate.annotations.CreationTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "history")
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+@Table(name = "histories")
 public class History {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    private Integer id;
 
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "user_id")
-    private User user;
-
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "device_id", nullable = false)
+    @ManyToOne
+    @JoinColumn(name = "device_id")
     private Device device;
 
-    @Column(nullable = false, length = 20)
-    private String action; // ON, OFF
+    private String action;
+    private String status;
+    private LocalDateTime timestamp = LocalDateTime.now();
 
-    @Column(nullable = false, length = 20)
-    private String status; // SUCCESS, FAILED, TIMEOUT
+    public History() {}
 
-    @Column(name = "error_message")
-    private String errorMessage;
+    public Integer getId() { return id; }
+    public void setId(Integer id) { this.id = id; }
 
-    @CreationTimestamp
-    @Column(name = "timestamp", updatable = false)
-    private LocalDateTime timestamp;
+    public Device getDevice() { return device; }
+    public void setDevice(Device device) { this.device = device; }
+
+    public String getAction() { return action; }
+    public void setAction(String action) { this.action = action; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+
+    public LocalDateTime getTimestamp() { return timestamp; }
+    public void setTimestamp(LocalDateTime timestamp) { this.timestamp = timestamp; }
 }

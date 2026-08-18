@@ -1,28 +1,34 @@
 package com.iot.backend.entity;
 
 import jakarta.persistence.*;
-import lombok.*;
-import org.hibernate.annotations.UpdateTimestamp;
 import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "devices")
-@Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
 public class Device {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer id;
 
-    @Column(nullable = false, length = 50)
     private String name;
-
-    @Column(name = "pin_gpio", nullable = false)
     private Integer pinGpio;
-
-    @Column(nullable = false)
-    private Integer status; // 0: OFF, 1: ON
-
-    @UpdateTimestamp
-    @Column(name = "updated_at")
+    private Integer status;
     private LocalDateTime updatedAt;
+
+    public Device() {}
+
+    public Integer getId() { return id; }
+    public void setId(Integer id) { this.id = id; }
+
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+
+    public Integer getPinGpio() { return pinGpio; }
+    public void setPinGpio(Integer pinGpio) { this.pinGpio = pinGpio; }
+
+    public Integer getStatus() { return status; }
+    public void setStatus(Integer status) { this.status = status; }
+
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 }
