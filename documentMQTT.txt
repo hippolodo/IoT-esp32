@@ -1,0 +1,14 @@
+
+mosquitto_sub -p 1884 -t "esp32/sensor/data" -u "admin" -p "123"
+
+mosquitto_pub -p 1884 -t "esp32/led_all/control" -m "OFF" -u "admin" -P "123"
+
+mosquitto_passwd -b password.txt B23DCCN294 271105
+
+C:\Users\Admin\Documents\PlatformIO\Projects\demo_mqtt
+
+
+
+
+
+
