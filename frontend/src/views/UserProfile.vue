@@ -116,7 +116,7 @@
         <div class="bg-white rounded-2xl p-6 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100">
           <div class="flex items-center mb-6">
             <i class="fa-solid fa-link text-blue-600 text-lg mr-2"></i>
-            <h3 class="text-base font-bold text-gray-800">Liên Kết Dự Án & Tài Nguyên</h3>
+            <h3 class="text-base font-bold text-gray-800">Liên Kết</h3>
           </div>
 
           <div class="space-y-4">

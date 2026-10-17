@@ -16,7 +16,6 @@
       </div>
     </div>
 
-    <!-- Hàng 1: 3 Thẻ Thông Kê (Nhiệt độ, Độ ẩm, Ánh sáng) -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
       <!-- Card Nhiệt độ -->
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-md transition-shadow">
@@ -24,15 +23,12 @@
           <span class="text-xs font-bold text-gray-400 tracking-wider ">NHIỆT ĐỘ</span>
           <div class="w-8 h-8 rounded-full bg-red-50 text-red-500 flex items-center justify-center">
             <i class="fa-solid fa-temperature-half"></i>
-          </div>
+          </div>    
         </div>
         <div class="flex items-baseline space-x-1">
           <span class="text-4xl font-bold">28.5</span>
           <span class="text-xl text-gray-500">°C</span>
         </div>
-        <!-- <div class="mt-4 text-xs font-medium text-red-500 flex items-center">
-          <i class="fa-solid fa-arrow-trend-up mr-1"></i> +0.2°C so với vừa rồi
-        </div> -->
       </div>
 
       <!-- Card Độ ẩm -->
@@ -47,12 +43,7 @@
           <span class="text-4xl font-bold">65</span>
           <span class="text-xl text-gray-500">%</span>
         </div>
-        <!-- <div class="mt-4 text-xs font-medium text-emerald-500 flex items-center">
-          <i class="fa-regular fa-circle-check mr-1"></i> Mức độ lý tưởng
-        </div> -->
       </div>
-
-      <!-- Card Ánh sáng -->
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-md transition-shadow">
         <div class="flex justify-between items-center mb-4">
           <span class="text-xs font-bold text-gray-400 tracking-wider uppercase">Ánh Sáng</span>
@@ -64,9 +55,6 @@
           <span class="text-4xl font-bold">420</span>
           <span class="text-xl text-gray-500">Lux</span>
         </div>
-        <!-- <div class="mt-4 text-xs font-medium text-amber-500 flex items-center">
-          <i class="fa-solid fa-sun mr-1"></i> Ánh sáng tự nhiên tốt
-        </div> -->
       </div>
     </div>
 
@@ -99,7 +87,7 @@
             
             <div class="flex items-center space-x-3">
               <div :class="['w-10 h-10 rounded-full flex items-center justify-center transition-colors', 
-                           lamp.isOn ? 'bg-blue-100 text-blue-600' : 'bg-white text-gray-400 border border-gray-200']">
+                           lamp.isOn ? 'bg-blue-100 text-blue-600' : 'bg-red-50 text-red-600 border border-red-200']">
                 <i class="fa-regular fa-lightbulb text-lg"></i>
               </div>
               <div>
@@ -116,7 +104,7 @@
             >
               <span class="sr-only">Toggle {{ lamp.name }}</span>
               <span 
-                :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+                :class="['pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-500 ease-in-out',
                          lamp.isOn ? 'translate-x-5' : 'translate-x-0']"
               ></span>
             </button>

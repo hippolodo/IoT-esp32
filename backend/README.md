@@ -1,395 +1,158 @@
-# IoT SmartHome Backend - Project Documentation
+# IoT backend — FastAPI
 
-## 📋 Tổng quan dự án
+Python backend thay thế Spring Boot, chạy trên cổng **8088**. Dùng SQLAlchemy/MySQL,
+Paho MQTT 2 và WebSocket thường. Frontend hiện có vẫn dùng dữ liệu mẫu; việc đổi backend
+không tự nối các màn hình Vue với API.
 
-Backend cho hệ thống nhà thông minh IoT sử dụng:
-- **Java 21 + Spring Boot 3.3.x**
-- **MySQL** cho lưu trữ dữ liệu
-- **MQTT** để giao tiếp với ESP32
-- **WebSocket STOMP** cho cập nhật real-time
+## Chạy trên Windows PowerShell
 
-## 🏗️ Kiến trúc hệ thống
+Yêu cầu Python 3.11 trở lên, MySQL và Mosquitto (khi kết nối mạch).
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Frontend (React/Vue)                 │
-└────────┬─────────────────────────────────┬───────────────┘
-         │ REST API + WebSocket            │ HTTP
-         │                                  │
-┌────────▼──────────────────────────────────▼───────────────┐
-│                  Spring Boot Backend (8088)                │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  REST Controllers (Auth, Device, Sensor, History)  │  │
-│  └──────────────────────────────────────────────────┘  │
-│                      │                                 │
-│  ┌──────────────────▼──────────────────┐               │
-│  │  Business Logic Services             │               │
-│  │  - AuthService                       │               │
-│  │  - DeviceService                     │               │
-│  │  - SensorService                     │               │
-│  │  - MqttService                       │               │
-│  └──────────────────┬──────────────────┘               │
-│                      │                                 │
-│  ┌──────────────────▼──────────────────┐               │
-│  │  Data Access Layer (JPA Repositories)│               │
-│  └──────────────────┬──────────────────┘               │
-│                      │                                 │
-│  ┌──────────────────▼──────────────────┐               │
-│  │  MySQL Database                       │               │
-│  │  - users, devices, sensors            │               │
-│  │  - datasensors, histories             │               │
-│  └──────────────────────────────────────┘               │
-│                      │                                 │
-│  ┌──────────────────▼──────────────────┐               │
-│  │  MQTT Service ◄──┐                   │               │
-│  │  - Subscribe sensor data              │               │
-│  │  - Publish device control             │               │
-│  └──────────────────────────────────────┘               │
-└─────────────────────────────────────────────────────────┘
-         │ MQTT                           
-         │                                
-┌────────▼─────────────────────────────────┐
-│    MQTT Broker (broker.emqx.io:1883)     │
-└────────┬─────────────────────────────────┘
-         │ MQTT
-         │
-    ┌────▼─────────────────┐
-    │   ESP32 Microcontroller│
-    │  - GPIO Control        │
-    │  - Sensor Reading      │
-    │  - MQTT Communication  │
-    └────────────────────────┘
+```powershell
+cd backend
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-## 📦 Cấu trúc thư mục
+Sửa `.env`: thông tin MySQL, MQTT username/password và ánh xạ thiết bị.
+Nếu mật khẩu database có ký tự đặc biệt, URL-encode phần mật khẩu trong DATABASE_URL.
+Tạo database nếu chưa có bằng MySQL client:
 
-```
-backend/
-├── src/main/java/com/iot/backend/
-│   ├── BackendApplication.java          # Entry point
-│   ├── config/
-│   │   ├── CorsConfig.java              # CORS configuration
-│   │   ├── WebSocketConfig.java         # WebSocket STOMP config
-│   │   ├── ApplicationStartup.java       # Startup initialization
-│   │   └── DataInitializer.java         # Sample data
-│   ├── controller/
-│   │   ├── AuthController.java          # Authentication API
-│   │   ├── DeviceController.java        # Device control API
-│   │   ├── SensorController.java        # Sensor data API
-│   │   └── HistoryController.java       # History API
-│   ├── service/
-│   │   ├── MqttService.java             # MQTT communication
-│   │   ├── DeviceService.java           # Device business logic
-│   │   ├── SensorService.java           # Sensor business logic
-│   │   └── AuthService.java             # Authentication logic
-│   ├── entity/
-│   │   ├── User.java
-│   │   ├── Device.java
-│   │   ├── Sensor.java
-│   │   ├── DataSensor.java
-│   │   └── History.java
-│   ├── repository/
-│   │   ├── UserRepository.java
-│   │   ├── DeviceRepository.java
-│   │   ├── SensorRepository.java
-│   │   ├── DataSensorRepository.java
-│   │   └── HistoryRepository.java
-│   └── dto/
-│       ├── LoginRequest.java
-│       ├── LoginResponse.java
-│       ├── ApiResponse.java
-│       ├── DeviceResponse.java
-│       ├── SensorDataResponse.java
-│       ├── HistoryResponse.java
-│       └── DeviceControlRequest.java
-├── src/main/resources/
-│   └── application.properties            # Configuration
-├── pom.xml                               # Maven dependencies
-├── TESTING.md                            # Testing guide
-└── README.md                             # This file
-```
-
-## 🚀 Quick Start
-
-### Điều kiện tiên quyết
-- Java 21
-- MySQL 8.0+
-- Maven 3.8+
-- MQTT Broker (public: broker.emqx.io)
-
-### Setup bước 1: Database
 ```sql
-CREATE DATABASE iot_db;
+CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 ```
 
-### Setup bước 2: Application configuration
-Edit `src/main/resources/application.properties`:
-```properties
-spring.datasource.username=root
-spring.datasource.password=YOUR_PASSWORD
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8088
 ```
 
-### Setup bước 3: Build & Run
-```bash
-# Build
-mvn clean install
+- API docs: http://localhost:8088/docs
+- Health: http://localhost:8088/api/auth/health
+- Dừng backend Java trước khi chạy để tránh trùng cổng.
+- Chạy **một worker**: MQTT callback, command lock và WebSocket hub cùng một process.
+- Đặt `MQTT_ENABLED=false` để dùng REST/database khi chưa có broker.
+- Broker mất kết nối không chặn khởi động REST; Paho thử kết nối lại và subscribe lại.
+- CORS mặc định cho Vue ở localhost/127.0.0.1:5173; sửa `CORS_ORIGINS` nếu khác cổng.
 
-# Run
-mvn spring-boot:run
+## Database cũ
+
+Giữ các bảng `users`, `devices`, `sensors`, `datasensors`, `histories` cùng tên cột
+snake_case của Spring Boot. Không xóa hay tự sửa dữ liệu cũ; `create_all` chỉ tạo bảng
+còn thiếu, không thay thế công cụ migration khi schema thực tế khác schema trong code.
+Chưa chạy migration hay truy cập MySQL thực tế khi chuyển mã.
+
+Chỉ seed khi từng bảng danh mục rỗng: 2 đèn GPIO 2/5, DHT11 GPIO 4,
+LDR GPIO 33 với đơn vị ADC. Database cũ giữ nguyên metadata: nếu trước đây là GPIO
+18/19/21 hoặc đơn vị lux, cần đối chiếu phần cứng và cập nhật thủ công.
+Các bản ghi đo và lịch sử hiện có được giữ nguyên.
+
+Tài khoản mới trên database trống: `admin` / `123456`. Tiếp tục đọc SHA-256 để
+đăng nhập bằng tài khoản Java cũ. Cơ chế đăng nhập vẫn như trước, chưa cấp token
+hay áp dụng phân quyền. Profile không trả về `passwordHash`.
+
+## REST API giữ nguyên
+
+| Method | Endpoint | Body/query |
+| --- | --- | --- |
+| GET | `/api/auth/health` | |
+| POST | `/api/auth/login` | `{"username":"admin","password":"123456"}` |
+| GET | `/api/user/profile` | |
+| GET | `/api/devices` | |
+| GET | `/api/devices/{id}` | |
+| POST | `/api/devices/control` | `{"deviceId":1,"status":1}` (0=OFF, 1=ON) |
+| GET | `/api/sensors` | |
+| GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
+| GET | `/api/sensors/data` | `sensorId,startTime,endTime,page,size` tùy chọn |
+| GET | `/api/sensors/filter` | Bắt buộc `type,startDate,endDate`; `page,size` tùy chọn |
+| GET | `/api/history` | `deviceId,status,startTime,endTime,page,size` tùy chọn |
+| GET | `/api/history/filter` | Bắt buộc `deviceId,status`; thời gian/phân trang tùy chọn |
+
+Response vẫn có `success,message,data,code`. Thuộc tính camelCase, chuỗi thời gian
+DTO `yyyy-MM-dd HH:mm:ss`, phân trang có `content,totalElements,totalPages,number,size,
+first,last,empty,numberOfElements,pageable,sort` giống cấu trúc Page của Spring.
+`page` bắt đầu từ 0. Dữ liệu sắp theo thời gian giảm dần, ID giảm dần để ổn định khi trùng thời gian.
+
+`/api/sensors/data` và `/api/history` nhận cặp startTime/endTime theo ngày, giờ,
+phút hoặc giây; bao gồm toàn bộ đơn vị cuối. Ví dụ hai giá trị `2026-10-17` lọc cả ngày.
+`/filter` dùng khoảng đóng ở hai đầu theo giờ đã truyền, như backend cũ;
+truy vấn sensor type giữ nguyên phân biệt hoa/thường theo database (ví dụ TEMPERATURE).
+Timestamp lưu theo giờ Việt Nam không kèm timezone, tương thích datetime cũ.
+
+Các lỗi input trả 400 với envelope, đăng nhập sai 401, thiết bị không có 404.
+Điều khiển khi broker chưa kết nối trả 503, LED chưa ánh xạ trả 400, lệnh trước
+đang chờ phản hồi trả 409. Không báo thành công giả khi publish lỗi.
+
+## MQTT theo firmware ESP32 đã cung cấp
+
+```dotenv
+MQTT_HOST=127.0.0.1
+MQTT_PORT=1884
+MQTT_USERNAME=B23DCCN294
+MQTT_PASSWORD=<mat-khau-da-cau-hinh>
+MQTT_DEVICE_MAP={"1":"led1","2":"led2"}
 ```
 
-Backend sẽ khởi động tại: `http://localhost:8088`
+Key trong `MQTT_DEVICE_MAP` là **ID thật trong MySQL**, value là LED trong firmware.
+Kiểm tra `GET /api/devices` trước khi cấu hình; không dựa vào GPIO cũ hay thứ tự bản ghi.
+Các thiết bị cũ ngoài map vẫn được liệt kê nhưng không gửi lệnh tới LED không tồn tại.
+ESP32 dùng IP laptop truy cập được trong LAN; Python dùng 127.0.0.1 nếu broker cùng máy.
+Mosquitto phải cho phép kết nối từ mạch trên cổng 1884 với đúng tài khoản.
 
-### Setup bước 4: Test
-- Mở Postman: Import từ TESTING.md
-- Test API: `POST /api/auth/login`
-- Username: `admin`, Password: `123456`
+| Hướng | Topic | Payload |
+| --- | --- | --- |
+| Nhận | `esp32/sensor/data` | `{"temperature":28.5,"humidity":65,"light":1500}` |
+| Gửi | `esp32/led1/control`, `esp32/led2/control` | `ON` hoặc `OFF` |
+| Nhận | `esp32/led1/status`, `esp32/led2/status` | `ON`, `OFF`, `FAIL` |
+| Nhận | `esp32/status` | Chuỗi trạng thái online/offline |
 
-## 📡 API Endpoints
+POST điều khiển giữ response `data: "OK"` và message cũ để tương thích; điều này
+chỉ xác nhận lệnh đã được đưa vào hàng đợi MQTT. Thiết bị chỉ đổi trạng thái khi
+ESP32 gửi ON/OFF. Mỗi lệnh tạo một history PENDING, cập nhật chính bản ghi đó thành
+SUCCESS/FAILED khi ACK hoặc quá `COMMAND_TIMEOUT_SECONDS` (mặc định 15 giây).
+Retained snapshot đồng bộ trạng thái nhưng không xác nhận lệnh, không tạo lịch sử giả.
+FAIL không được hiểu là OFF. DHT lỗi vẫn lưu dữ liệu ánh sáng hợp lệ.
 
-### Authentication
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| POST | `/api/auth/login` | Đăng nhập |
-| GET | `/api/auth/health` | Kiểm tra trạng thái |
+Firmware không có command ID: không thể phân biệt tuyệt đối phản hồi trễ/trùng
+của hai lệnh cùng trạng thái. Backend giới hạn một lệnh đang chờ trên mỗi thiết bị.
+GPIO đọc lại chỉ xác nhận mức logic; light là ADC thô, không phải lux đã hiệu chuẩn.
 
-### Device Management
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/devices` | Lấy tất cả thiết bị |
-| GET | `/api/devices/{id}` | Lấy chi tiết thiết bị |
-| POST | `/api/devices/{id}/toggle?status={0\|1}` | Điều khiển thiết bị |
-| POST | `/api/devices/control` | Điều khiển (request body) |
+## WebSocket mới tại `/ws`
 
-### Sensor Data
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/sensors` | Lấy danh sách cảm biến |
-| GET | `/api/sensors/latest` | Lấy dữ liệu mới nhất |
-| GET | `/api/sensors/data` | Lấy dữ liệu phân trang |
-| GET | `/api/sensors/filter` | Lọc dữ liệu theo loại & thời gian |
+Đây là WebSocket JSON thường, **không phải SockJS/STOMP**. REST URL giữ nguyên;
+client STOMP cũ phải đổi cách kết nối. Vue hiện chưa có client realtime nên không có
+đoạn kết nối cũ cần sửa trong lần chuyển backend này.
 
-### History
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| GET | `/api/history` | Lấy lịch sử phân trang |
-| GET | `/api/history/filter` | Lọc lịch sử |
-
-## 🔌 MQTT Topics
-
-| Topic | Chiều | Mô tả |
-|-------|-------|-------|
-| `iot/sensors/data` | ← | Nhận dữ liệu cảm biến từ ESP32 |
-| `iot/device/{id}/control` | → | Gửi lệnh điều khiển tới ESP32 |
-| `iot/device/{id}/status` | ← | Nhận phản hồi trạng thái từ ESP32 |
-
-### Định dạng Message
-
-**Sensor Data** (từ ESP32):
-```json
-{
-    "temperature": 25.5,
-    "humidity": 60.3,
-    "light": 750
+```js
+const ws = new WebSocket('ws://localhost:8088/ws')
+ws.onmessage = ({ data }) => {
+  const event = JSON.parse(data)
+  if (event.topic === '/topic/sensors') console.log(event.data)
+  if (event.topic === '/topic/device-status') console.log(event.data)
 }
 ```
 
-**Device Control** (tới ESP32):
+Có thể lọc một kênh bằng `/ws?topic=/topic/sensors`.
+
 ```json
-{
-    "deviceId": 1,
-    "pin": 18,
-    "action": "ON"
-}
+{"topic":"/topic/sensors","data":{"temperature":28.5,"humidity":65,"light":1500}}
 ```
 
-**Device Status** (từ ESP32):
 ```json
-{
-    "deviceId": 1,
-    "status": 1,
-    "pin": 18
-}
+{"topic":"/topic/device-status","data":{"deviceId":1,"status":1,"timestamp":"2026-10-17 16:00:00","result":"ON"}}
 ```
 
-## 🌐 WebSocket Endpoints
+`result` có thể ON/OFF/FAIL/TIMEOUT. `/topic/esp32-status` có `data.message`.
+Khi kết nối lại, lấy REST latest/devices để đồng bộ; WebSocket không lưu sự kiện cũ.
+Client chậm chỉ giữ tối đa 100 sự kiện mới nhất.
 
-### Connect
-```
-ws://localhost:8088/ws
-```
+## Kiểm thử
 
-### Subscribe Topics
-- `/topic/sensors` - Dữ liệu cảm biến real-time
-- `/topic/device-status` - Trạng thái thiết bị real-time
-
-## 🗄️ Database Schema
-
-### users
-```sql
-CREATE TABLE users (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    username VARCHAR(100) UNIQUE,
-    password_hash VARCHAR(255),
-    full_name VARCHAR(100),
-    email VARCHAR(100),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-### devices
-```sql
-CREATE TABLE devices (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(100),
-    pin_gpio INT,
-    status INT DEFAULT 0,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-### sensors
-```sql
-CREATE TABLE sensors (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    name VARCHAR(100),
-    type VARCHAR(50),
-    unit VARCHAR(20),
-    pin_gpio INT
-);
-```
-
-### datasensors
-```sql
-CREATE TABLE datasensors (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    sensor_id INT,
-    value FLOAT,
-    recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (sensor_id) REFERENCES sensors(id)
-);
-```
-
-### histories
-```sql
-CREATE TABLE histories (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    device_id INT,
-    action VARCHAR(50),
-    status VARCHAR(50),
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (device_id) REFERENCES devices(id)
-);
-```
-
-## 🔐 Bảo mật
-
-### Authentication
-- Mật khẩu được mã hóa bằng SHA256
-- Không sử dụng JWT (có thể thêm sau)
-
-### CORS
-- Cho phép: `localhost:*`, `127.0.0.1:*`
-- Có thể cấu hình trong `CorsConfig.java`
-
-### MQTT
-- Kết nối tới public broker (không có auth mặc định)
-- Có thể thêm username/password nếu cần
-
-## 🛠️ Development Tips
-
-### Enable Debug Logging
-Edit `application.properties`:
-```properties
-logging.level.root=INFO
-logging.level.com.iot.backend=DEBUG
-logging.level.org.springframework.web=DEBUG
-```
-
-### Inspect Database
-```bash
-mysql -u root -p iot_db
-SELECT * FROM devices;
-SELECT * FROM datasensors ORDER BY recorded_at DESC LIMIT 10;
-SELECT * FROM histories ORDER BY timestamp DESC LIMIT 10;
-```
-
-### Test MQTT Broker Connectivity
-```bash
-# Test publish
-mosquitto_pub -h broker.emqx.io -t test/topic -m "Hello"
-
-# Test subscribe
-mosquitto_sub -h broker.emqx.io -t test/topic
-```
-
-## 📚 Dependencies
-
-Main libraries:
-- **Spring Boot 3.3.2**
-- **Spring Data JPA**
-- **Spring Web**
-- **Spring WebSocket**
-- **Spring Integration MQTT**
-- **MySQL Connector/J**
-- **Eclipse Paho MQTT Client**
-- **Lombok**
-- **Jackson (JSON)**
-
-## 🐛 Troubleshooting
-
-### MQTT Connection Failed
-```
-Nguyên nhân: Broker không khả dụng
-Giải pháp: 
-1. Kiểm tra internet
-2. Thử broker khác: broker.hivemq.com:1883
-3. Kiểm tra firewall port 1883
-```
-
-### WebSocket Connection Failed
-```
-Nguyên nhân: CORS hoặc port sai
-Giải pháp:
-1. Kiểm tra origin là http://localhost:xxxx
-2. Kiểm tra port 8088 không bị firewall chặn
-3. Restart backend
-```
-
-### Database Connection Error
-```
-Nguyên nhân: MySQL chưa chạy hoặc credentials sai
-Giải pháp:
-1. Start MySQL service
-2. Verify username/password trong application.properties
-3. Kiểm tra database tồn tại
-```
-
-## 📖 Complete Testing Guide
-
-Xem file **TESTING.md** để:
-- Hướng dẫn setup chi tiết
-- Test API bằng Postman
-- Test MQTT bằng MQTTX
-- Test WebSocket real-time
-- Debugging tips
-
-## 🤝 Contributing
-
-Khi thêm feature mới:
-1. Tạo branch mới
-2. Follow Java/Spring Best Practices
-3. Thêm unit tests
-4. Update documentation
-
-## 📝 License
-
-MIT License - Dự án học tập
-
----
-
-**Status**: ✅ Hoàn tất phát triển  
-**Last Updated**: 2024-08-18  
-**Version**: 1.0.0-SNAPSHOT
+Xem [TESTING.md](TESTING.md) cho phạm vi tự động và kiểm tra mạch thật.
+Tham khảo [FastAPI WebSockets](https://fastapi.tiangolo.com/advanced/websockets/)
+và [Paho MQTT Python](https://eclipse.dev/paho/clients/python/docs/).
