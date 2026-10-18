@@ -9,7 +9,7 @@
     <!-- Khu vực Bộ lọc (Filter) -->
     <div class="bg-white rounded-2xl p-6 shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 mb-6">
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-5">
-        
+
         <!-- Dropdown Loại cảm biến -->
         <div>
           <label class="block text-xs font-bold text-gray-700 mb-2 uppercase tracking-wide">Loại Cảm Biến</label>
@@ -33,12 +33,12 @@
             <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
                 <i class="fa-solid fa-magnifying-glass text-xs"></i>
             </div>
-            <input 
-                type="text" 
-                v-model="searchValue" 
+            <input
+                type="text"
+                v-model="searchValue"
                 @keyup.enter="handleSearch"
-                :placeholder="searchType === 'TIME' ? 'Nhập ngày hoặc giờ từ bảng' : 'VD: 28.4, 66, 400...'"
-                class="block w-full pl-9 pr-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors" 
+                :placeholder="searchType === 'TIME' ? 'VD: 2026-10-18 hoặc 2026-10-18 17:30' : 'VD: 28.4, 66, 400...'"
+                class="block w-full pl-9 pr-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors"
             />
             </div>
         </div>
@@ -55,6 +55,8 @@
       </div>
     </div>
 
+    <p v-if="error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
+    <p v-if="loading" role="status" class="mb-3 text-sm text-gray-500">Đang tải dữ liệu…</p>
     <!-- Bảng Dữ Liệu -->
     <div class="bg-white rounded-2xl shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 overflow-hidden">
       <div class="overflow-x-auto">
@@ -69,6 +71,7 @@
             </tr>
           </thead>
           <tbody class="divide-y divide-gray-100">
+            <tr v-if="!loading && !paginatedData.length"><td colspan="5" class="p-8 text-center text-sm text-gray-500">Không có dữ liệu phù hợp.</td></tr>
             <!-- Row 1 -->
             <tr v-for="item in paginatedData" :key="item.id" class="hover:bg-blue-50/30 transition-colors">
                 <td class="px-6 py-4 text-sm text-gray-500">{{ item.id }}</td>
@@ -90,14 +93,14 @@
     <!-- Hiển thị thông tin trang động -->
            <div class="flex items-center space-x-6">
     <span class="text-[11px] font-semibold text-gray-400">
-      Hiển thị trang {{ filteredData.length === 0 ? 0 : currentPage }} / {{ totalPages }} (Tổng {{ filteredData.length }} bản ghi)
+      Hiển thị trang {{ total === 0 ? 0 : currentPage }} / {{ totalPages }} (Tổng {{ total }} bản ghi)
     </span>
-    
+
     <!-- Ô dropdown chọn Page Size -->
     <div class="flex items-center space-x-2">
       <span class="text-[11px] font-bold text-gray-500 uppercase">Số dòng:</span>
-      <select 
-        v-model="itemsPerPage" 
+      <select
+        v-model="itemsPerPage"
         @change="handleSizeChange"
         class="text-xs font-semibold text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1 outline-none cursor-pointer hover:bg-gray-100 transition-colors"
       >
@@ -110,19 +113,19 @@
       </select>
     </div>
   </div>
-  
+
   <!-- Cụm bên phải: Các nút chuyển trang 1, 2, 3... -->
   <div class="flex space-x-1">
-    <button @click="prevPage" :disabled="currentPage === 1" class="px-2 py-1 text-xs font-semibold text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50">Trước</button>
-    
-    <button 
-      v-for="page in totalPages" 
+    <button @click="prevPage" :disabled="currentPage <= 1 || loading" class="px-2 py-1 text-xs font-semibold text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50">Trước</button>
+
+    <button
+      v-for="page in visiblePages"
       :key="page"
       @click="goToPage(page)"
       :class="['w-7 h-7 flex items-center justify-center text-xs rounded-md transition-colors', currentPage === page ? 'font-bold bg-blue-600 text-white shadow-sm' : 'font-bold text-gray-500 hover:bg-gray-100']"
     >{{ page }}</button>
-    
-    <button @click="nextPage" :disabled="currentPage === totalPages" class="px-2 py-1 text-xs font-semibold text-gray-500 hover:text-gray-800 transition-colors disabled:opacity-50">Sau</button>
+
+    <button @click="nextPage" :disabled="currentPage >= totalPages || loading" class="px-2 py-1 text-xs font-semibold text-gray-500 hover:text-gray-800 transition-colors disabled:opacity-50">Sau</button>
   </div>
         </div>
     </div>
@@ -131,102 +134,34 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-
-// 1. Mảng dữ liệu giả (Mô phỏng 45 bản ghi liên tiếp)
-const sensorHistories = ref(
-  Array.from({ length: 45 }).map((_, index) => {
-    const types = [
-      { type: 'TEMPERATURE', icon: 'fa-temperature-half', class: 'bg-red-100 text-red-600 border-red-200/50', val: `${(28.0 + Math.random()*2).toFixed(1)} °C` },
-      { type: 'HUMIDITY', icon: 'fa-droplet', class: 'bg-blue-100 text-blue-600 border-blue-200/50', val: `${Math.floor(60 + Math.random()*10)}.0 %` },
-      { type: 'LIGHT', icon: 'fa-sun', class: 'bg-indigo-100 text-indigo-600 border-indigo-200/50', val: `${Math.floor(400 + Math.random()*50)} Lux` }
-    ];
-    const t = types[index % 3];
-    
-    // Sinh thời gian giảm dần (Cách nhau 5 phút)
-    const date = new Date();
-    date.setMinutes(date.getMinutes() - index * 5);
-    const timeString = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}:00`;
-
-    return {
-      id: 1045 - index,
-      name: index % 3 === 2 ? 'LDR_Garden' : 'DHT11_LivingRoom',
-      type: t.type,
-      value: t.val,
-      time: timeString,
-      typeClass: t.class,
-      icon: t.icon
-    }
-  })
-)
-
-// --- TRẠNG THÁI FORM TÌM KIẾM ---
-const searchType = ref('all')
-const searchValue = ref('')
-
-// Trạng thái lưu trữ bộ lọc đang được CHỐT (chỉ đổi khi bấm nút "Tìm kiếm")
-const appliedFilters = ref({
-  type: 'all',
-  value: ''
-})
-
-// Hành động khi bấm nút Tìm kiếm
+import { usePage } from '../composables/usePage'
+const searchType = ref('all'), searchValue = ref('')
+const applied = ref({ type: 'all', value: '' })
+const { rows, currentPage, itemsPerPage, total, totalPages, visiblePages, loading, error,
+  load, handleSizeChange, goToPage, nextPage, prevPage } = usePage('/api/sensors/data', () => {
+    const { type, value } = applied.value
+    return { sensorType: ['all', 'TIME'].includes(type) ? undefined : type,
+      value: type !== 'TIME' ? value : undefined,
+      startTime: type === 'TIME' && value ? value : undefined,
+      endTime: type === 'TIME' && value ? value : undefined }
+  }, '/topic/sensors')
+const styles = {
+  TEMPERATURE: ['fa-temperature-half', 'bg-red-100 text-red-600 border-red-200/50'],
+  HUMIDITY: ['fa-droplet', 'bg-blue-100 text-blue-600 border-blue-200/50'],
+  LIGHT: ['fa-sun', 'bg-indigo-100 text-indigo-600 border-indigo-200/50'],
+}
+const paginatedData = computed(() => rows.value.map(row => {
+  const type = row.sensorType.toUpperCase()
+  const [icon, typeClass] = styles[type] || ['fa-gauge', 'bg-gray-100 text-gray-600']
+  return { id: row.id, name: row.sensorName, type, icon, typeClass,
+    value: `${row.value} ${type === 'LIGHT' ? 'ADC' : row.unit}`, time: row.recordedAt }
+}))
 const handleSearch = () => {
-  appliedFilters.value = {
-    type: searchType.value,
-    value: searchType.value === 'TIME'
-      ? searchValue.value.trim().replace(/[Tt]/g, ' ').replace(/\s+/g, ' ')
-      : searchValue.value.trim()
-  }
-  currentPage.value = 1 
-}
-
-// Hành động khi bấm nút Làm mới
-const handleReset = () => {
-  searchType.value = 'all'
-  searchValue.value = ''
-  appliedFilters.value = { type: 'all', value: '' }
+  applied.value = { type: searchType.value, value: searchValue.value.trim().replace(/[Tt]/g, ' ').replace(/\s+/g, ' ') }
   currentPage.value = 1
+  load()
 }
-
-// --- LOGIC LỌC DỮ LIỆU THỰC SỰ ---
-const filteredData = computed(() => {
-  return sensorHistories.value.filter(item => {
-    const filters = appliedFilters.value;
-    
-    // TIME là chế độ tìm ngày/giờ trên tất cả cảm biến.
-    if (filters.type === 'TIME') {
-      const itemTime = item.time.replace(/[Tt]/g, ' ').replace(/\s+/g, ' ');
-      return !filters.value || itemTime.includes(filters.value);
-    }
-    if (filters.type !== 'all' && item.type !== filters.type) {
-      return false;
-    }
-    if (filters.value && !String(item.value).toLowerCase().includes(filters.value.toLowerCase())) {
-      return false;
-    }
-    
-    return true;
-  })
-})
-
-
-const currentPage = ref(1)
-const itemsPerPage = ref(8)
-
-const handleSizeChange = () => {
-  currentPage.value = 1
-}
-
-const totalPages = computed(() => Math.ceil(filteredData.value.length / itemsPerPage.value) || 1)
-
-const paginatedData = computed(() => {
-  const start = (currentPage.value - 1) * itemsPerPage.value
-  return filteredData.value.slice(start, start + itemsPerPage.value)
-})
-
-const nextPage = () => { if (currentPage.value < totalPages.value) currentPage.value++ }
-const prevPage = () => { if (currentPage.value > 1) currentPage.value-- }
-const goToPage = (page) => { currentPage.value = page }
+const handleReset = () => { searchType.value = 'all'; searchValue.value = ''; handleSearch() }
 </script>
 
 <style scoped>

@@ -18,6 +18,7 @@
 
       <!-- Vùng hiển thị màn hình thay đổi linh hoạt -->
       <main class="flex-1 overflow-y-auto p-8">
+        <p v-if="system.error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ system.error }}</p>
         <div class="max-w-7xl mx-auto">
           <!-- <component :is="..."> sẽ tự động load Dashboard hoặc DataSensors -->
           <component :is="activeComponent" />
@@ -28,7 +29,10 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { startSystem, stopSystem, system } from './services/system'
+onMounted(startSystem)
+onUnmounted(stopSystem)
 import Sidebar from './components/Sidebar.vue'
 import Dashboard from './views/Dashboard.vue'
 import DataSensors from './views/DataSensors.vue'

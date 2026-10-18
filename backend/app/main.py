@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictInt
-from sqlalchemy import select
+from sqlalchemy import String, cast, func, select
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 
@@ -99,6 +99,19 @@ def create_app(settings=None):
     def health():
         return envelope("OK", "Backend đang chạy")
 
+    @app.get("/api/system/status")
+    def system_status():
+        return envelope(mqtt.connection_status(), "Trạng thái kết nối")
+
+    def device_response(row, db):
+        result = device_dict(row)
+        led = settings.device_map.get(row.id)
+        result["controllable"] = led is not None
+        result["controlPin"] = {"led1": 2, "led2": 5}.get(led)
+        result["pending"] = db.scalars(select(History.id).where(
+            History.device_id == row.id, History.status == "PENDING")).first() is not None
+        return result
+
     @app.post("/api/auth/login")
     def login(body: LoginRequest, db: Session = Depends(database)):
         if not body.username:
@@ -124,7 +137,7 @@ def create_app(settings=None):
 
     @app.get("/api/devices")
     def devices(db: Session = Depends(database)):
-        return envelope([device_dict(d) for d in db.scalars(select(Device).order_by(Device.id))],
+        return envelope([device_response(d, db) for d in db.scalars(select(Device).order_by(Device.id))],
                         "Lấy danh sách thiết bị thành công")
 
     @app.post("/api/devices/control")
@@ -140,7 +153,7 @@ def create_app(settings=None):
         row = db.get(Device, id)
         if row is None:
             raise ControlError("Không tìm thấy thiết bị", 404)
-        return envelope(device_dict(row), "Lấy thông tin thiết bị thành công")
+        return envelope(device_response(row, db), "Lấy thông tin thiết bị thành công")
 
     @app.get("/api/sensors")
     def sensors(db: Session = Depends(database)):
@@ -160,11 +173,16 @@ def create_app(settings=None):
 
     @app.get("/api/sensors/data")
     def sensor_data(sensorId: int | None = None, startTime: str | None = None, endTime: str | None = None,
-                    page: int = 0, size: int = 10, db: Session = Depends(database)):
+                    page: int = 0, size: int = 10, sensorType: str | None = None,
+                    value: str | None = None, db: Session = Depends(database)):
         start, end = time_range(startTime, endTime)
         query = select(DataSensor)
         if sensorId is not None:
             query = query.where(DataSensor.sensor_id == sensorId)
+        if sensorType:
+            query = query.join(DataSensor.sensor).where(func.upper(Sensor.type) == sensorType.upper())
+        if value:
+            query = query.where(cast(DataSensor.value, String).contains(value, autoescape=True))
         if start:
             query = query.where(DataSensor.recorded_at >= start, DataSensor.recorded_at < end)
         query = query.order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc())
@@ -181,24 +199,31 @@ def create_app(settings=None):
         ).order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc())
         return envelope(paginate(db, query, page, size, data_dict), "Lọc dữ liệu cảm biến thành công")
 
-    def history_page(db, device_id, status, start, end, page, size, inclusive=False):
+    def history_page(db, device_id, status, start, end, page, size, inclusive=False, action=None, sort="desc"):
+        if sort not in {"asc", "desc"}:
+            raise ValueError("sort phải là asc hoặc desc")
         query = select(History)
         if device_id is not None:
             query = query.where(History.device_id == device_id)
         if status is not None:
             query = query.where(History.status == status)
+        if action:
+            if action not in {"ON", "OFF"}:
+                raise ValueError("action phải là ON hoặc OFF")
+            query = query.where(History.action == action)
         if start:
             query = query.where(History.timestamp >= start)
         if end:
             query = query.where(History.timestamp <= end if inclusive else History.timestamp < end)
-        query = query.order_by(History.timestamp.desc(), History.id.desc())
+        query = query.order_by(History.timestamp.asc(), History.id.asc()) if sort == "asc" else query.order_by(History.timestamp.desc(), History.id.desc())
         return paginate(db, query, page, size, history_dict)
 
     @app.get("/api/history")
     def history(deviceId: int | None = None, status: str | None = None, startTime: str | None = None,
-                endTime: str | None = None, page: int = 0, size: int = 10, db: Session = Depends(database)):
+                endTime: str | None = None, page: int = 0, size: int = 10, action: str | None = None,
+                sort: str = "desc", db: Session = Depends(database)):
         start, end = time_range(startTime, endTime)
-        return envelope(history_page(db, deviceId, status, start, end, page, size), "Lấy lịch sử thành công")
+        return envelope(history_page(db, deviceId, status, start, end, page, size, action=action, sort=sort), "Lấy lịch sử thành công")
 
     @app.get("/api/history/filter")
     def filter_history(deviceId: int | None = None, status: str | None = None, startTime: str | None = None,

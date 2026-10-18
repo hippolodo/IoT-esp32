@@ -186,3 +186,40 @@ def test_websocket_rejects_foreign_origin(client):
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect('/ws', headers={'origin': 'https://example.com'}):
             pytest.fail('Foreign origin should not be accepted')
+
+
+def test_connection_status_and_capabilities(client, connected):
+    from time import monotonic
+    assert client.get('/api/system/status').json()['data']['mqttConnected'] is True
+    connected.handle_message('esp32/sensor/data', '{"light":1200}')
+    assert client.get('/api/system/status').json()['data']['esp32Online'] is True
+    connected.last_seen = monotonic() - 21
+    assert client.get('/api/system/status').json()['data']['esp32Online'] is False
+    connected._on_disconnect(None, None, None, None, None)
+    assert connected.connection_status()['esp32Online'] is None
+    device = client.get('/api/devices/1').json()['data']
+    assert device['controllable'] is True and device['controlPin'] == 2 and device['pending'] is False
+    client.post('/api/devices/control', json={'deviceId': 1, 'status': 1})
+    assert client.get('/api/devices/1').json()['data']['pending'] is True
+    connected.handle_message('esp32/led1/status', 'ON')
+    assert client.get('/api/devices/1').json()['data']['pending'] is False
+
+
+def test_server_side_sensor_filters(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/sensor/data', '{"temperature":28.5,"humidity":60,"light":1500}')
+    service.handle_message('esp32/sensor/data', '{"temperature":29.5,"light":1600}')
+    page = client.get('/api/sensors/data', params={'sensorType': 'temperature', 'value': '28.5'}).json()['data']
+    assert page['totalElements'] == 1 and page['content'][0]['value'] == 28.5
+    assert client.get('/api/sensors/data?sensorType=LIGHT&size=1&page=1').json()['data']['totalElements'] == 2
+
+
+def test_history_action_and_sort_filters(client):
+    with client.app.state.sessions.begin() as db:
+        for i, action in enumerate(['ON', 'OFF', 'ON']):
+            db.add(History(device_id=1, action=action, status='SUCCESS', timestamp=datetime(2026, 10, 18, 10, i)))
+    page = client.get('/api/history?action=ON&sort=asc&size=1').json()['data']
+    assert page['totalElements'] == 2 and page['content'][0]['timestamp'].endswith('10:00:00')
+    assert client.get('/api/history?action=ON&sort=desc').json()['data']['content'][0]['timestamp'].endswith('10:02:00')
+    assert client.get('/api/history?action=bad').status_code == 400
+    assert client.get('/api/history?sort=bad').status_code == 400

@@ -6,15 +6,11 @@
         <h2 class="text-2xl font-bold text-[#1a1d2e]">Hồ Sơ Người Dùng</h2>
         <p class="text-sm text-gray-500 mt-1">Thông tin cá nhân, liên kết dự án và thông số hệ thống IoT</p>
       </div>
-      <div class="flex items-center space-x-2 bg-blue-50 px-4 py-2 rounded-full border border-blue-100">
-        <span class="relative flex h-3 w-3">
-          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-          <span class="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-        </span>
-        <span class="text-sm font-semibold text-blue-600">ESP32 Connected</span>
-      </div>
+      <ConnectionStatus />
     </div>
 
+    <p v-if="error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
+    <p v-if="loading" role="status" class="mb-3 text-sm text-gray-500">Đang tải hồ sơ…</p>
     <!-- Main Content Grid -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
       
@@ -25,16 +21,16 @@
           <div class="w-24 h-24 rounded-full bg-gray-100 border-4 border-white shadow-md flex items-center justify-center mb-4 overflow-hidden relative">
             <i class="fa-solid fa-user text-4xl text-gray-300"></i>
             <!-- Nút đổi avatar -->
-            <button class="absolute bottom-0 w-full h-1/3 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
+            <button disabled aria-label="Đổi ảnh chưa khả dụng" class="absolute bottom-0 w-full h-1/3 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
               <i class="fa-solid fa-camera text-white text-xs"></i>
             </button>
           </div>
-          <h3 class="text-lg font-bold text-gray-800">Nguyễn Văn Hiệp</h3>
+          <h3 class="text-lg font-bold text-gray-800">{{ profile?.fullName || '—' }}</h3>
           <p class="text-xs text-gray-500 mt-1">Lập trình viên / Quản trị viên hệ thống</p>
           
           <div class="mt-5 px-4 py-1.5 bg-green-50 rounded-full border border-green-100 flex items-center">
             <span class="w-2 h-2 rounded-full bg-green-500 mr-2"></span>
-            <span class="text-[11px] font-bold text-green-600">Tài khoản đang hoạt động</span>
+            <span class="text-[11px] font-bold text-green-600">Hồ sơ quản trị viên</span>
           </div>
         </div>
 
@@ -47,8 +43,8 @@
                 <i class="fa-solid fa-plug text-sm"></i>
               </div>
               <div>
-                <p class="text-sm font-bold text-gray-800">03</p>
-                <p class="text-[11px] text-gray-500 font-medium">Bóng đèn kết nối</p>
+                <p class="text-sm font-bold text-gray-800">{{ system.devices.filter(device => device.controllable).length }}</p>
+                <p class="text-[11px] text-gray-500 font-medium">Đèn đã cấu hình</p>
               </div>
             </div>
             
@@ -57,8 +53,8 @@
                 <i class="fa-solid fa-satellite-dish text-sm"></i>
               </div>
               <div>
-                <p class="text-sm font-bold text-gray-800">03</p>
-                <p class="text-[11px] text-gray-500 font-medium">Cảm biến hoạt động</p>
+                <p class="text-sm font-bold text-gray-800">{{ sensorCount }}</p>
+                <p class="text-[11px] text-gray-500 font-medium">Cảm biến đã đăng ký</p>
               </div>
             </div>
           </div>
@@ -79,13 +75,13 @@
             <!-- Họ và tên -->
             <div>
               <label class="block text-xs font-bold text-gray-500 mb-2">Họ và tên</label>
-              <input type="text" value="Nguyễn Văn Hiệp" class="w-full px-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
+              <input type="text" :value="profile?.fullName || ''" readonly class="w-full px-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none" />
             </div>
             
             <!-- Username -->
             <div>
               <label class="block text-xs font-bold text-gray-500 mb-2">Tên đăng nhập (Username)</label>
-              <input type="text" value="admin" disabled class="w-full px-4 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-gray-200 rounded-lg cursor-not-allowed" />
+              <input type="text" :value="profile?.username || ''" disabled class="w-full px-4 py-2.5 text-sm font-medium text-gray-500 bg-gray-100 border border-gray-200 rounded-lg cursor-not-allowed" />
             </div>
 
             <!-- Email -->
@@ -95,7 +91,7 @@
                 <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
                   <i class="fa-regular fa-envelope"></i>
                 </div>
-                <input type="email" value="admin@gmail.com" class="w-full pl-9 pr-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
+                <input type="email" :value="profile?.email || ''" readonly class="w-full pl-9 pr-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
               </div>
             </div>
 
@@ -106,7 +102,7 @@
                 <div class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">
                   <i class="fa-solid fa-phone text-xs"></i>
                 </div>
-                <input type="text" value="0987 654 321" class="w-full pl-9 pr-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" />
+                <input type="text" value="" placeholder="Chưa có thông tin" readonly class="w-full pl-9 pr-4 py-2.5 text-sm font-medium text-gray-800 bg-gray-50 border border-gray-200 rounded-lg outline-none" />
               </div>
             </div>
           </div>
@@ -160,18 +156,7 @@
           </div>
         </div>
 
-        <!-- Buttons Hành động -->
-        <div class="flex justify-end items-center space-x-3 pt-2">
-          <button class="px-5 py-2.5 text-sm font-semibold text-gray-500 hover:text-gray-700 transition-colors">
-            Hủy bỏ
-          </button>
-          <button class="px-5 py-2.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-semibold rounded-lg transition-colors shadow-sm">
-            Đổi mật khẩu
-          </button>
-          <button class="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm shadow-blue-500/30">
-            Lưu thay đổi
-          </button>
-        </div>
+        <p class="text-sm text-gray-500">Hồ sơ hiện ở chế độ xem.</p>
 
       </div>
     </div>
@@ -179,6 +164,24 @@
 </template>
 
 <script setup>
+import { ref, onMounted, onUnmounted } from 'vue'
+import ConnectionStatus from '../components/ConnectionStatus.vue'
+import { system } from '../services/system'
+import { api } from '../services/api'
+const profile = ref(null), sensorCount = ref(0), loading = ref(true), error = ref('')
+const controller = new AbortController()
+onMounted(async () => {
+  try {
+    const [user, sensors] = await Promise.all([
+      api('/api/user/profile', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) }),
+      api('/api/sensors', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) }),
+    ])
+    profile.value = user
+    sensorCount.value = sensors.length
+  } catch (err) { if (err.name !== 'AbortError') error.value = err.message }
+  finally { loading.value = false }
+})
+onUnmounted(() => controller.abort())
 </script>
 
 <style scoped>

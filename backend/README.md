@@ -1,8 +1,8 @@
 # IoT backend — FastAPI
 
 Python backend thay thế Spring Boot, chạy trên cổng **8088**. Dùng SQLAlchemy/MySQL,
-Paho MQTT 2 và WebSocket thường. Frontend hiện có vẫn dùng dữ liệu mẫu; việc đổi backend
-không tự nối các màn hình Vue với API.
+Paho MQTT 2 và WebSocket thường. Frontend Vue đã nối REST/WebSocket qua Vite proxy
+đến cổng 8088; dashboard nhận cảm biến, điều khiển đèn và đồng bộ trạng thái thật.
 
 ## Chạy trên Windows PowerShell
 
@@ -56,6 +56,7 @@ hay áp dụng phân quyền. Profile không trả về `passwordHash`.
 | Method | Endpoint | Body/query |
 | --- | --- | --- |
 | GET | `/api/auth/health` | |
+| GET | `/api/system/status` | `mqttConnected`, `esp32Online` (null nếu chưa biết) |
 | POST | `/api/auth/login` | `{"username":"admin","password":"123456"}` |
 | GET | `/api/user/profile` | |
 | GET | `/api/devices` | |
@@ -82,6 +83,12 @@ Timestamp lưu theo giờ Việt Nam không kèm timezone, tương thích dateti
 Các lỗi input trả 400 với envelope, đăng nhập sai 401, thiết bị không có 404.
 Điều khiển khi broker chưa kết nối trả 503, LED chưa ánh xạ trả 400, lệnh trước
 đang chờ phản hồi trả 409. Không báo thành công giả khi publish lỗi.
+
+`/api/devices` và `/api/devices/{id}` bổ sung `controllable`, `controlPin`, `pending`
+để frontend chỉ điều khiển LED đã ánh xạ và chờ ACK. Không ghi đè metadata GPIO cũ.
+`/api/sensors/data` hỗ trợ thêm `sensorType` (không phân biệt hoa/thường) và `value`
+(tìm chuỗi trong giá trị số). `/api/history` hỗ trợ thêm `action=ON|OFF` và
+`sort=asc|desc`. Các tham số cũ giữ nguyên.
 
 ## MQTT theo firmware ESP32 đã cung cấp
 
@@ -120,8 +127,9 @@ GPIO đọc lại chỉ xác nhận mức logic; light là ADC thô, không ph�
 ## WebSocket mới tại `/ws`
 
 Đây là WebSocket JSON thường, **không phải SockJS/STOMP**. REST URL giữ nguyên;
-client STOMP cũ phải đổi cách kết nối. Vue hiện chưa có client realtime nên không có
-đoạn kết nối cũ cần sửa trong lần chuyển backend này.
+client STOMP cũ phải đổi cách kết nối. Vue dùng WebSocket thường, tự reconnect và
+lấy REST snapshot để đồng bộ lại. Khi không nhận hoạt động từ ESP32 trong 20 giây,
+status coi mạch offline; dữ liệu đo hợp lệ mới sẽ cập nhật trạng thái trở lại.
 
 ```js
 const ws = new WebSocket('ws://localhost:8088/ws')

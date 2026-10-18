@@ -7,15 +7,12 @@
         <p class="text-sm text-gray-500 mt-1">Cập nhật dữ liệu cảm biến và điều khiển thiết bị theo thời gian thực</p>
       </div>
       <!-- Nút trạng thái ESP32 -->
-      <div class="flex items-center space-x-2 bg-blue-50 px-4 py-2 rounded-full border border-blue-100">
-        <span class="relative flex h-3 w-3">
-          <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-          <span class="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
-        </span>
-        <span class="text-sm font-semibold text-blue-600">ESP32 Connected</span>
-      </div>
+      <ConnectionStatus />
     </div>
 
+    <p v-if="system.sensorError" role="alert" class="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-700">{{ system.sensorError }} — nhiệt độ/độ ẩm đang hiển thị giá trị hợp lệ gần nhất.</p>
+    <p v-if="system.controlError" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ system.controlError }}</p>
+    <p class="mb-3 text-xs text-gray-500">Giá trị gần nhất · {{ latestTime }}. Ánh sáng là ADC thô.</p>
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
       <!-- Card Nhiệt độ -->
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-md transition-shadow">
@@ -26,7 +23,7 @@
           </div>    
         </div>
         <div class="flex items-baseline space-x-1">
-          <span class="text-4xl font-bold">28.5</span>
+          <span class="text-4xl font-bold">{{ system.sensors.temperature?.value ?? '—' }}</span>
           <span class="text-xl text-gray-500">°C</span>
         </div>
       </div>
@@ -40,7 +37,7 @@
           </div>
         </div>
         <div class="flex items-baseline space-x-1">
-          <span class="text-4xl font-bold">65</span>
+          <span class="text-4xl font-bold">{{ system.sensors.humidity?.value ?? '—' }}</span>
           <span class="text-xl text-gray-500">%</span>
         </div>
       </div>
@@ -52,8 +49,8 @@
           </div>
         </div>
         <div class="flex items-baseline space-x-1">
-          <span class="text-4xl font-bold">420</span>
-          <span class="text-xl text-gray-500">Lux</span>
+          <span class="text-4xl font-bold">{{ system.sensors.light?.value ?? '—' }}</span>
+          <span class="text-xl text-gray-500">ADC</span>
         </div>
       </div>
     </div>
@@ -80,6 +77,7 @@
           <h3 class="text-lg font-bold">Điều Khiển Đèn</h3>
         </div>
 
+        <p v-if="!lamps.length" class="text-sm text-gray-500">Chưa có thiết bị.</p>
         <div class="space-y-4">
           <!-- Vòng lặp render các công tắc đèn -->
           <div v-for="lamp in lamps" :key="lamp.id" 
@@ -93,13 +91,17 @@
               <div>
                 <p class="text-sm font-bold">{{ lamp.name }}</p>
                 <p class="text-xs text-gray-500">{{ lamp.gpio }}</p>
+                <p class="text-xs text-amber-700" v-if="!lamp.controllable">Chưa cấu hình điều khiển</p>
+                <p class="text-xs text-blue-600" v-else-if="lamp.pending || system.sending[lamp.id]">Đang chờ ESP32 xác nhận…</p>
               </div>
             </div>
 
             <!-- Nút Toggle Switch -->
             <button 
-              @click="toggleLamp(lamp)"
-              :class="['relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+              @click="toggleDevice(lamp)"
+              :disabled="!system.backendOnline || !system.mqttConnected || system.esp32Online !== true || !lamp.controllable || lamp.pending || system.sending[lamp.id]"
+              :aria-checked="lamp.isOn" role="switch" :aria-label="lamp.name"
+              :class="['disabled:opacity-40 disabled:cursor-not-allowed relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
                        lamp.isOn ? 'bg-blue-600' : 'bg-gray-200']"
             >
               <span class="sr-only">Toggle {{ lamp.name }}</span>
@@ -117,74 +119,23 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-} from 'chart.js'
+import { computed, ref } from 'vue'
+import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js'
 import { Line } from 'vue-chartjs'
-
-// Đăng ký các thành phần của Chart.js
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-)
-
-// --- QUẢN LÝ TRẠNG THÁI ĐÈN ---
-const lamps = ref([
-  { id: 1, name: 'Đèn Phòng Khách', gpio: 'GPIO 18', isOn: true },
-  { id: 2, name: 'Đèn Phòng Ngủ', gpio: 'GPIO 19', isOn: false },
-  { id: 3, name: 'Đèn Ban Công', gpio: 'GPIO 21', isOn: true },
-])
-
-const toggleLamp = (lamp) => {
-  lamp.isOn = !lamp.isOn
-  // Gửi API đến backend để điều khiển ESP32 tại đây
-  console.log(`Đã chuyển trạng thái ${lamp.name} thành ${lamp.isOn ? 'BẬT' : 'TẮT'}`)
-}
-
-// --- CẤU HÌNH BIỂU ĐỒ ---
-const chartData = ref({
-  labels: ['10:00', '10:05', '10:10', '10:15', '10:20', '10:25', '10:30', '10:35', '10:40', '10:45'],
+import ConnectionStatus from '../components/ConnectionStatus.vue'
+import { system, toggleDevice } from '../services/system'
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+const lamps = computed(() => system.devices.map(row => ({ ...row, isOn: row.status === 1,
+  gpio: row.controlPin != null ? `GPIO ${row.controlPin}` : `GPIO ${row.pinGpio ?? '—'}` })))
+const latestTime = computed(() => Object.values(system.sensors).map(row => row.time).sort().at(-1) || 'Chưa có dữ liệu')
+const chartData = computed(() => ({
+  labels: system.points.map(row => row.time.slice(11)),
   datasets: [
-    {
-      label: 'Nhiệt độ (°C)',
-      borderColor: '#ef4444', // Red-500
-      backgroundColor: '#ef4444',
-      data: [28.0, 28.2, 28.5, 29.1, 28.8, 28.5, 28.3, 28.4, 28.5, 28.5],
-      tension: 0.4,
-      yAxisID: 'y'
-    },
-    {
-      label: 'Độ ẩm (%)',
-      borderColor: '#3b82f6', // Blue-500
-      backgroundColor: '#3b82f6',
-      data: [60, 62, 65, 63, 61, 64, 66, 65, 65, 65],
-      tension: 0.4,
-      yAxisID: 'y1'
-    },
-    {
-      label: 'Ánh sáng (Lux)',
-      borderColor: '#f59e0b', // Amber-500
-      backgroundColor: '#f59e0b',
-      data: [380, 400, 420, 450, 430, 410, 400, 415, 420, 420],
-      tension: 0.4,
-      yAxisID: 'y2'
-    }
-  ]
-})
-
+    { key: 'temperature', label: 'Nhiệt độ (°C)', borderColor: '#ef4444', yAxisID: 'y' },
+    { key: 'humidity', label: 'Độ ẩm (%)', borderColor: '#3b82f6', yAxisID: 'y1' },
+    { key: 'light', label: 'Ánh sáng (ADC)', borderColor: '#f59e0b', yAxisID: 'y2' },
+  ].map(({ key, ...style }) => ({ ...style, data: system.points.map(row => row[key] ?? null), tension: 0.4 })),
+}))
 const chartOptions = ref({
   responsive: true,
   maintainAspectRatio: false,
@@ -222,7 +173,7 @@ const chartOptions = ref({
       type: 'linear',
       display: true,
       position: 'right',
-      title: { display: true, text: 'Ánh sáng (Lux)' },
+      title: { display: true, text: 'Ánh sáng (ADC)' },
       grid: { display: false }
     }
   }

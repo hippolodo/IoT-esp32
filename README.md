@@ -11,12 +11,13 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Firmware ESP32 | Đã biên dịch thành công bằng PlatformIO cho DOIT ESP32 DEVKIT V1 |
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
-| Frontend Vue | Build thành công; các màn hình hiện dùng dữ liệu mẫu, đang chờ tích hợp API/WebSocket |
-| Kiểm thử backend | 17 kiểm thử đã đạt với SQLite tạm và MQTT giả lập |
-| Luồng web → mạch thật | Chưa kiểm chứng xuyên suốt |
+| Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
+| Kiểm thử | 20 kiểm thử backend và 2 kiểm thử frontend đã đạt |
+| Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
-**Nút bật/tắt và trạng thái “ESP32 Connected” trên giao diện hiện là phần mô phỏng.**
-Chúng chưa phản ánh trạng thái thật của mạch.
+Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái
+đèn và báo lỗi khi timeout. Trạng thái backend/MQTT/ESP32 được theo dõi riêng;
+thiết bị chưa được ánh xạ trong firmware bị vô hiệu hóa công tắc điều khiển.
 
 ## Kiến trúc
 
@@ -25,7 +26,7 @@ flowchart LR
     ESP[ESP32 · Arduino/C++] <-->|MQTT| Broker[Mosquitto · 1884]
     Broker <-->|MQTT| API[FastAPI · 8088]
     API <--> DB[(MySQL)]
-    Web[Vue 3 · 5173] -. REST / WebSocket đang tích hợp .-> API
+    Web[Vue 3 · 5173] <-->|REST / WebSocket| API
 ```
 
 ## Công nghệ
@@ -149,8 +150,13 @@ Build frontend:
 npm run build
 ```
 
-Kết quả được tạo trong `frontend/dist/`. Việc chạy frontend và backend đồng thời
-chưa tự kết nối các màn hình mẫu; cần bổ sung lời gọi REST và WebSocket trong Vue.
+Kết quả được tạo trong `frontend/dist/`. Vite chuyển tiếp `/api` và `/ws` tới
+FastAPI cổng 8088; cần chạy cả hai server. WebSocket tự kết nối lại, REST đồng bộ
+trạng thái mỗi 5 giây. Hai bảng lọc/phân trang trên backend và tự cập nhật dữ liệu.
+
+Khi deploy, cấu hình reverse proxy cho `/api` và `/ws` về FastAPI, hoặc đặt
+`VITE_API_BASE_URL` thành URL backend lúc build và thêm origin frontend vào
+`CORS_ORIGINS`. Không đưa thông tin MQTT vào biến môi trường frontend.
 
 ## 4. Cấu hình và nạp ESP32
 
@@ -258,13 +264,21 @@ Test tự động kiểm tra API, bộ lọc thời gian, MQTT handler, lịch s
 với database tạm. Kiểm thử trên phần cứng thật thực hiện theo
 [backend/TESTING.md](backend/TESTING.md).
 
+Kiểm thử frontend tại thư mục `frontend`:
+
+```powershell
+npm test
+npm run build
+```
+
+Test frontend dùng HTTP/WebSocket giả lập để kiểm tra hợp đồng API, chờ ACK,
+timeout, reconnect và tránh ghi đè sự kiện mới bằng snapshot cũ.
+
 ## Phần đang hoàn thiện
 
-- Kết nối các màn hình Vue với REST API và WebSocket.
-- Thay dữ liệu mẫu, trạng thái kết nối cố định bằng dữ liệu thực tế.
-- Đồng bộ thao tác đèn với ACK, lỗi kết nối và timeout.
 - Hoàn thiện chức năng hồ sơ, đổi mật khẩu và xác thực/phân quyền.
-- Kiểm chứng toàn bộ luồng với ESP32, Mosquitto và MySQL thật.
+- Kiểm tra trực tiếp công tắc trên trình duyệt với đèn vật lý; hồ sơ hiện chỉ đọc.
+- Bổ sung command ID trong firmware nếu cần phân biệt tuyệt đối ACK trễ/trùng.
 
 ## Trước khi đưa repository lên GitHub
 
