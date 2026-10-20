@@ -2,11 +2,13 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import secrets
 from contextlib import asynccontextmanager, suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import anyio
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,10 +20,11 @@ from starlette.exceptions import HTTPException
 from .config import Settings
 from .contracts import (data_dict, device_dict, envelope, history_dict, paginate,
                         parse_date, sensor_dict, time_range)
-from .database import Base, DataSensor, Device, History, Sensor, User, make_database, now, seed_database
+from .database import AuthSession, DataSensor, Device, History, Sensor, User, initialize_database, make_database, now, seed_database
 from .mqtt import ControlError, EventHub, MqttService
 
 log = logging.getLogger(__name__)
+bearer_auth = HTTPBearer(auto_error=False, description="Dán accessToken nhận từ /api/auth/login để xác thực.")
 
 
 class LoginRequest(BaseModel):
@@ -50,7 +53,7 @@ def create_app(settings=None):
 
     @asynccontextmanager
     async def lifespan(app):
-        Base.metadata.create_all(engine)
+        initialize_database(engine)
         seed_database(sessions)
         hub.loop = asyncio.get_running_loop()
         mqtt.start()
@@ -73,6 +76,16 @@ def create_app(settings=None):
     def database():
         with sessions() as db:
             yield db
+
+    def current_session(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_auth), db: Session = Depends(database)):
+        token = credentials.credentials if credentials else None
+        session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
+        if session is None or session.expires_at <= now() or db.get(User, session.user_id) is None:
+            raise ControlError("Vui lòng đăng nhập để tiếp tục", 401)
+        return session
+
+    def current_user(session: AuthSession = Depends(current_session), db: Session = Depends(database)):
+        return db.get(User, session.user_id)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -122,14 +135,21 @@ def create_app(settings=None):
         hashed = hashlib.sha256(body.password.encode()).hexdigest()
         if not user or not hmac.compare_digest(user.password_hash, hashed):
             raise ControlError("Sai tài khoản hoặc mật khẩu", 401)
-        return envelope(dict(userId=user.id, username=user.username, fullName=user.full_name,
+        token = secrets.token_urlsafe(32)
+        db.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                           user_id=user.id, expires_at=now() + timedelta(hours=24)))
+        db.commit()
+        return envelope(dict(userId=user.id, username=user.username, fullName=user.full_name, accessToken=token,
                              email=user.email, success=True, message="Đăng nhập thành công"), "Đăng nhập thành công")
 
+    @app.post("/api/auth/logout")
+    def logout(session: AuthSession = Depends(current_session), db: Session = Depends(database)):
+        db.delete(session)
+        db.commit()
+        return envelope("OK", "Đã đăng xuất")
+
     @app.get("/api/user/profile")
-    def profile(db: Session = Depends(database)):
-        user = db.scalars(select(User).where(User.username == "admin")).first()
-        if not user:
-            raise ControlError("Không tìm thấy user", 404)
+    def profile(user: User = Depends(current_user)):
         # Do not expose passwordHash, even though the former entity serializer did.
         return envelope(dict(id=user.id, username=user.username, fullName=user.full_name,
                              email=user.email, createdAt=user.created_at.isoformat() if user.created_at else None),
@@ -141,10 +161,10 @@ def create_app(settings=None):
                         "Lấy danh sách thiết bị thành công")
 
     @app.post("/api/devices/control")
-    def control(body: DeviceControlRequest):
+    def control(body: DeviceControlRequest, user: User = Depends(current_user)):
         if body.status not in (0, 1):
             raise ControlError("Status phải là 0 (OFF) hoặc 1 (ON)", 400)
-        mqtt.control(body.deviceId, body.status)
+        mqtt.control(body.deviceId, body.status, user_id=user.id)
         # Preserve the legacy response; state remains unchanged until the ESP32 ACK.
         return envelope("OK", "Bật thiết bị thành công" if body.status else "Tắt thiết bị thành công")
 

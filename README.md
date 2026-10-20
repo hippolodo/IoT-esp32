@@ -129,7 +129,9 @@ Chạy backend bằng một worker:
 - Đặt `MQTT_ENABLED=false` khi muốn chạy API/database mà chưa có broker.
 
 Trên database mới, tài khoản mẫu là `admin` / `123456`.
-Login hiện chưa cấp token/session và API chưa áp dụng phân quyền.
+Đăng nhập cấp token phiên có hiệu lực 24 giờ. Frontend tự gửi token khi gọi API;
+điều khiển thiết bị và xem hồ sơ yêu cầu đăng nhập. Lịch sử điều khiển mới lưu `userId`
+của người đăng nhập, lịch sử cũ chưa có người thực hiện hiển thị `—`.
 
 ## 3. Chạy frontend
 

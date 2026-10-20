@@ -132,7 +132,7 @@ const chartData = computed(() => ({
   labels: system.points.map(row => row.time.slice(11)),
   datasets: [
     { key: 'temperature', label: 'Nhiệt độ (°C)', borderColor: '#ef4444', yAxisID: 'y' },
-    { key: 'humidity', label: 'Độ ẩm (%)', borderColor: '#3b82f6', yAxisID: 'y1' },
+    { key: 'humidity', label: 'Độ ẩm (%)', borderColor: '#3b82f6', yAxisID: 'y' },
     { key: 'light', label: 'Ánh sáng (ADC)', borderColor: '#f59e0b', yAxisID: 'y2' },
   ].map(({ key, ...style }) => ({ ...style, data: system.points.map(row => row[key] ?? null), tension: 0.4 })),
 }))
@@ -161,18 +161,18 @@ const chartOptions = ref({
       type: 'linear',
       display: true,
       position: 'left',
-      title: { display: true, text: 'Nhiệt độ & Độ ẩm' },
+      min: 10,
+      max: 80,
+      ticks: { stepSize: 20 },
+      title: { display: true, text: 'Nhiệt độ (°C) / Độ ẩm (%)' },
       grid: { borderDash: [4, 4] }
-    },
-    y1: {
-      type: 'linear',
-      display: false, // Ẩn bớt trục Y của độ ẩm cho đỡ rối, dùng chung scale với nhiệt độ
-      position: 'left'
     },
     y2: {
       type: 'linear',
       display: true,
       position: 'right',
+      min: 0,
+      max: 3000,
       title: { display: true, text: 'Ánh sáng (ADC)' },
       grid: { display: false }
     }

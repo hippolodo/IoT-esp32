@@ -27,7 +27,7 @@ def data_dict(row):
 
 
 def history_dict(row):
-    return dict(id=row.id, deviceId=row.device_id, deviceName=row.device.name if row.device else None,
+    return dict(id=row.id, userId=row.user_id, deviceId=row.device_id, deviceName=row.device.name if row.device else None,
                 action=row.action, status=row.status, timestamp=date_string(row.timestamp))
 
 

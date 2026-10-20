@@ -1,10 +1,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { api, websocketUrl } from '../src/services/api.js'
+import { api, websocketUrl, setAccessToken } from '../src/services/api.js'
 import { system, startSystem, stopSystem, toggleDevice } from '../src/services/system.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const ok = data => ({ ok: true, json: async () => ({ success: true, data }) })
+
+test('API sends session token and clears it after unauthorized response', async () => {
+  let headers
+  globalThis.fetch = async (url, options) => { headers = options.headers; return ok('OK') }
+  setAccessToken('session-token')
+  await api('/api/devices/control', { method: 'POST', body: '{}' })
+  assert.equal(headers.Authorization, 'Bearer session-token')
+  globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ message: 'Đăng nhập lại' }) })
+  await assert.rejects(api('/api/user/profile'), /Đăng nhập lại/)
+  globalThis.fetch = async (url, options) => { headers = options.headers; return ok('OK') }
+  await api('/api/auth/login')
+  assert.equal(headers.Authorization, undefined)
+})
 
 test('API preserves filters, POST body and server errors', async () => {
   let received

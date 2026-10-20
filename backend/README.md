@@ -40,7 +40,8 @@ CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 Giữ các bảng `users`, `devices`, `sensors`, `datasensors`, `histories` cùng tên cột
 snake_case của Spring Boot. Không xóa hay tự sửa dữ liệu cũ; `create_all` chỉ tạo bảng
 còn thiếu, không thay thế công cụ migration khi schema thực tế khác schema trong code.
-Chưa chạy migration hay truy cập MySQL thực tế khi chuyển mã.
+Khi khởi động, backend tạo bảng `auth_sessions` và bổ sung cột `histories.user_id`
+nếu còn thiếu. Lịch sử cũ giữ nguyên, `user_id` để NULL.
 
 Chỉ seed khi từng bảng danh mục rỗng: 2 đèn GPIO 2/5, DHT11 GPIO 4,
 LDR GPIO 33 với đơn vị ADC. Database cũ giữ nguyên metadata: nếu trước đây là GPIO
@@ -48,8 +49,17 @@ LDR GPIO 33 với đơn vị ADC. Database cũ giữ nguyên metadata: nếu tr�
 Các bản ghi đo và lịch sử hiện có được giữ nguyên.
 
 Tài khoản mới trên database trống: `admin` / `123456`. Tiếp tục đọc SHA-256 để
-đăng nhập bằng tài khoản Java cũ. Cơ chế đăng nhập vẫn như trước, chưa cấp token
-hay áp dụng phân quyền. Profile không trả về `passwordHash`.
+đăng nhập bằng tài khoản Java cũ. Đăng nhập trả `accessToken` có hiệu lực 24 giờ;
+frontend giữ token trong `sessionStorage` và gửi header `Authorization: Bearer <accessToken>`.
+Điều khiển thiết bị và xem hồ sơ yêu cầu token hợp lệ; hồ sơ trả đúng người đăng nhập,
+không trả `passwordHash`. Đăng xuất thu hồi token phía backend.
+Backend lấy người thực hiện từ phiên đăng nhập, không nhận `userId` do FE tự khai báo.
+API lịch sử trả thêm `userId`; các bản ghi cũ trả null.
+
+Trong Swagger (`/docs`), gọi `/api/auth/login`, sao chép `data.accessToken`,
+bấm **Authorize** và dán token (không thêm chữ `Bearer`). Swagger sẽ gửi token
+khi gọi API điều khiển, hồ sơ và đăng xuất. Sau khi đăng xuất, bấm Authorize → Logout
+để xóa token khỏi Swagger.
 
 ## REST API giữ nguyên
 
@@ -58,6 +68,7 @@ hay áp dụng phân quyền. Profile không trả về `passwordHash`.
 | GET | `/api/auth/health` | |
 | GET | `/api/system/status` | `mqttConnected`, `esp32Online` (null nếu chưa biết) |
 | POST | `/api/auth/login` | `{"username":"admin","password":"123456"}` |
+| POST | `/api/auth/logout` | Yêu cầu Bearer token, thu hồi phiên hiện tại |
 | GET | `/api/user/profile` | |
 | GET | `/api/devices` | |
 | GET | `/api/devices/{id}` | |

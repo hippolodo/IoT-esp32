@@ -144,7 +144,7 @@ class MqttService:
                     "timestamp": date_string(device.updated_at), "result": payload}
         self.hub.emit("/topic/device-status", data)
 
-    def control(self, device_id, status):
+    def control(self, device_id, status, user_id):
         with self.lock:
             self.expire_pending()
             with self.sessions.begin() as db:
@@ -160,7 +160,7 @@ class MqttService:
                 if pending:
                     raise ControlError("Thiết bị đang chờ phản hồi lệnh trước", 409)
                 action = "ON" if status == 1 else "OFF"
-                history = History(device_id=device_id, action=action, status="PENDING", timestamp=now())
+                history = History(device_id=device_id, user_id=user_id, action=action, status="PENDING", timestamp=now())
                 db.add(history)
                 db.flush()
                 history_id = history.id

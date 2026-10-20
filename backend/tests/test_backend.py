@@ -1,3 +1,4 @@
+import hashlib
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -7,8 +8,68 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.contracts import time_range
-from app.database import DataSensor, Device, History, Sensor, now, seed_database
+from app.database import AuthSession, DataSensor, Device, History, Sensor, User, initialize_database, make_database, now, seed_database
 from app.main import create_app
+
+
+def test_swagger_declares_bearer_auth_for_protected_routes(client):
+    schema = client.get('/openapi.json').json()
+    assert schema['components']['securitySchemes']['HTTPBearer']['scheme'] == 'bearer'
+    for path, method in [('/api/devices/control', 'post'), ('/api/user/profile', 'get'), ('/api/auth/logout', 'post')]:
+        assert schema['paths'][path][method]['security'] == [{'HTTPBearer': []}]
+    assert not schema['paths']['/api/auth/login']['post'].get('security')
+
+
+def test_control_requires_verified_session(client, connected):
+    original = client.headers.pop('Authorization')
+    body = {'deviceId': 1, 'status': 1, 'userId': 1}
+    assert client.post('/api/devices/control', json=body).status_code == 401
+    client.headers['Authorization'] = 'Bearer forged-token'
+    assert client.post('/api/devices/control', json=body).status_code == 401
+    connected.client.publish.assert_not_called()
+    client.headers['Authorization'] = original
+
+
+def test_control_uses_logged_in_user_and_logout_revokes_session(client, connected):
+    with client.app.state.sessions.begin() as db:
+        user = User(username='operator', password_hash=hashlib.sha256(b'secret').hexdigest())
+        db.add(user)
+        db.flush()
+        user_id = user.id
+    result = client.post('/api/auth/login', json={'username': 'operator', 'password': 'secret'}).json()['data']
+    token = result['accessToken']
+    client.headers['Authorization'] = f'Bearer {token}'
+    assert client.get('/api/user/profile').json()['data']['id'] == user_id
+    assert client.post('/api/devices/control', json={'deviceId': 1, 'status': 1, 'userId': 1}).status_code == 200
+    connected.handle_message('esp32/led1/status', 'ON')
+    row = client.get('/api/history').json()['data']['content'][0]
+    assert row['userId'] == user_id and row['status'] == 'SUCCESS'
+    with client.app.state.sessions() as db:
+        assert db.get(AuthSession, token) is None
+    assert client.post('/api/auth/logout').status_code == 200
+    assert client.post('/api/devices/control', json={'deviceId': 1, 'status': 0}).status_code == 401
+
+
+def test_expired_session_cannot_control(client, connected):
+    token = client.headers['Authorization'].split()[1]
+    with client.app.state.sessions.begin() as db:
+        db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()).expires_at = now() - timedelta(seconds=1)
+    assert client.post('/api/devices/control', json={'deviceId': 1, 'status': 1}).status_code == 401
+    connected.client.publish.assert_not_called()
+
+
+def test_existing_history_migration_preserves_rows(tmp_path):
+    from sqlalchemy import text
+    engine, sessions = make_database(f"sqlite:///{tmp_path / 'legacy.sqlite3'}")
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE histories (id INTEGER PRIMARY KEY, device_id INTEGER, action VARCHAR(255), status VARCHAR(255), timestamp DATETIME)'))
+        connection.execute(text("INSERT INTO histories (id, action, status) VALUES (1, 'ON', 'SUCCESS')"))
+    initialize_database(engine)
+    initialize_database(engine)
+    with sessions() as db:
+        row = db.get(History, 1)
+        assert row.action == 'ON' and row.user_id is None
+    engine.dispose()
 
 
 @pytest.fixture
@@ -16,6 +77,8 @@ def client(tmp_path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'test.sqlite3'}", mqtt_enabled=False)
     app = create_app(settings)
     with TestClient(app) as client:
+        token = client.post('/api/auth/login', json={'username': 'admin', 'password': '123456'}).json()['data']['accessToken']
+        client.headers['Authorization'] = f'Bearer {token}'
         yield client
 
 
@@ -99,6 +162,7 @@ def test_command_ack_updates_one_history(client, connected):
     history = client.get('/api/history').json()['data']
     assert history['totalElements'] == 1
     assert history['content'][0]['status'] == 'SUCCESS'
+    assert history['content'][0]['userId'] == 1
     assert client.get('/api/history/filter?deviceId=1&status=SUCCESS').json()['data']['totalElements'] == 1
     assert client.get('/api/history/filter').status_code == 400
 

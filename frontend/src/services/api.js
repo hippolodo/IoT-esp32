@@ -1,4 +1,11 @@
 const base = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '')
+let accessToken = globalThis.sessionStorage?.getItem('accessToken') || ''
+
+export function setAccessToken(token) {
+  accessToken = token || ''
+  if (accessToken) globalThis.sessionStorage?.setItem('accessToken', accessToken)
+  else globalThis.sessionStorage?.removeItem('accessToken')
+}
 
 export async function api(path, { query, ...options } = {}) {
   const params = new URLSearchParams()
@@ -7,10 +14,15 @@ export async function api(path, { query, ...options } = {}) {
   })
   try {
     const response = await fetch(`${base}${path}${params.size ? `?${params}` : ''}`, {
-      ...options, headers: { 'Content-Type': 'application/json', ...options.headers },
+      ...options, headers: { 'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options.headers },
       signal: options.signal || AbortSignal.timeout(10000),
     })
     const body = await response.json().catch(() => null)
+    if (response.status === 401 && accessToken) {
+      setAccessToken('')
+      globalThis.dispatchEvent?.(new Event('auth-expired'))
+    }
     if (!response.ok || !body?.success) throw new Error(body?.message || `API trả lỗi ${response.status}`)
     return body.data
   } catch (error) {

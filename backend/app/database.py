@@ -2,7 +2,7 @@ import hashlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, create_engine, select, func
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, create_engine, select, func, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 
@@ -48,6 +48,7 @@ class History(Base):
     __tablename__ = "histories"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     device_id: Mapped[int | None] = mapped_column(ForeignKey("devices.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     action: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str | None] = mapped_column(String(255))
     timestamp: Mapped[datetime | None] = mapped_column(DateTime, default=now)
@@ -62,6 +63,21 @@ class User(Base):
     full_name: Mapped[str | None] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime | None] = mapped_column(DateTime, default=now)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+def initialize_database(engine):
+    Base.metadata.create_all(engine)
+    # create_all does not add columns to existing tables. Preserve old history.
+    if "user_id" not in {column["name"] for column in inspect(engine).get_columns("histories")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE histories ADD COLUMN user_id INTEGER NULL REFERENCES users(id)"))
 
 
 def make_database(url):
