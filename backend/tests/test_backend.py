@@ -10,6 +10,121 @@ from app.config import Settings
 from app.contracts import time_range
 from app.database import AuthSession, DataSensor, Device, History, Sensor, User, initialize_database, make_database, now, seed_database
 from app.main import create_app
+from app.passwords import verify_password
+
+
+def registration_body(**overrides):
+    return {
+        'username': 'new_user', 'fullName': 'Nguyễn Văn Hiệp',
+        'email': 'hiep@example.com', 'password': 'Test-password-123',
+        'confirmPassword': 'Test-password-123', **overrides,
+    }
+
+
+def test_registration_login_profile_and_control(client, connected):
+    client.headers.pop('Authorization')
+    body = registration_body(username='  NEW_User  ', email='  Hiep@Example.COM  ')
+    response = client.post('/api/auth/register', json=body)
+    assert response.status_code == 201
+    result = response.json()
+    assert result['code'] == 201 and result['success'] is True
+    user = result['data']
+    assert user['username'] == 'new_user'
+    assert user['email'] == 'hiep@example.com' and user['fullName'] == 'Nguyễn Văn Hiệp'
+    assert not any('password' in key.lower() or 'token' in key.lower() for key in user)
+    with client.app.state.sessions() as db:
+        saved = db.get(User, user['userId'])
+        assert saved.password_hash.startswith('pbkdf2_sha256$')
+        assert body['password'] not in saved.password_hash
+        assert verify_password(body['password'], saved.password_hash)
+    assert client.post('/api/auth/login', json={'username': 'new_user', 'password': 'wrong-password'}).status_code == 401
+    login = client.post('/api/auth/login', json={'username': ' NEW_USER ', 'password': body['password']})
+    assert login.status_code == 200
+    client.headers['Authorization'] = f"Bearer {login.json()['data']['accessToken']}"
+    assert client.get('/api/user/profile').json()['data']['id'] == user['userId']
+    assert client.post('/api/devices/control', json={'deviceId': 1, 'status': 1}).status_code == 200
+    connected.handle_message('esp32/led1/status', 'ON')
+    history = client.get('/api/history').json()['data']['content'][0]
+    assert history['userId'] == user['userId'] and history['status'] == 'SUCCESS'
+
+
+@pytest.mark.parametrize('overrides', [
+    {'username': 'ab'}, {'username': 'a' * 51}, {'username': 'bad user'},
+    {'username': 'user<script>'}, {'username': None},
+    {'fullName': '   '}, {'fullName': 'a' * 256},
+    {'email': 'not-an-email'}, {'email': 'name @example.com'}, {'email': 'a' * 256 + '@test.com'},
+    {'password': 'short', 'confirmPassword': 'short'},
+    {'password': 'a' * 129, 'confirmPassword': 'a' * 129},
+    {'password': '        ', 'confirmPassword': '        '},
+    {'confirmPassword': 'different-password'},
+])
+def test_registration_rejects_invalid_data(client, overrides):
+    assert client.post('/api/auth/register', json=registration_body(**overrides)).status_code == 400
+    with client.app.state.sessions() as db:
+        assert len(db.query(User).all()) == 1
+
+
+def test_registration_requires_fields_and_rejects_duplicates(client):
+    assert client.post('/api/auth/register', json={}).status_code == 400
+    assert client.post('/api/auth/register', json=registration_body(username=' ADMIN ')).status_code == 409
+    assert client.post('/api/auth/register', json=registration_body(email='ADMIN@GMAIL.COM')).status_code == 409
+    assert client.post('/api/auth/register', json=registration_body()).status_code == 201
+    assert client.post('/api/auth/register', json=registration_body(email='other@example.com')).status_code == 409
+    assert client.post('/api/auth/register', json=registration_body(username='other', email='HIEP@EXAMPLE.COM')).status_code == 409
+    with client.app.state.sessions() as db:
+        assert len(db.query(User).all()) == 2
+
+
+def test_user_uniqueness_is_enforced_by_database(client):
+    from sqlalchemy.exc import IntegrityError
+    for username, email in [('admin', 'different@example.com'), ('different', 'admin@gmail.com')]:
+        with pytest.raises(IntegrityError):
+            with client.app.state.sessions.begin() as db:
+                db.add(User(username=username, email=email, password_hash='unused'))
+
+
+def test_registration_migration_preserves_legacy_users(tmp_path):
+    from sqlalchemy import inspect, text
+    engine, sessions = make_database(f"sqlite:///{tmp_path / 'legacy-users.sqlite3'}")
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE users (id INTEGER PRIMARY KEY, username VARCHAR(255) NOT NULL, password_hash VARCHAR(255) NOT NULL, full_name VARCHAR(255), email VARCHAR(255), created_at DATETIME)'))
+        connection.execute(text("INSERT INTO users (id, username, password_hash) VALUES (1, 'legacy', 'unchanged')"))
+    initialize_database(engine)
+    initialize_database(engine)
+    with sessions() as db:
+        assert db.get(User, 1).password_hash == 'unchanged'
+    assert {'uq_users_username', 'uq_users_email'} <= {index['name'] for index in inspect(engine).get_indexes('users')}
+    engine.dispose()
+
+
+def test_password_salts_and_legacy_compatibility():
+    from app.passwords import hash_password
+    one, two = hash_password('Test-password-123'), hash_password('Test-password-123')
+    assert one != two
+    assert verify_password('Test-password-123', one)
+    assert not verify_password('wrong-password', one)
+    assert verify_password('legacy', hashlib.sha256(b'legacy').hexdigest())
+    assert not verify_password('wrong', hashlib.sha256(b'legacy').hexdigest())
+    assert not verify_password('test', 'pbkdf2_sha256$bad$salt$hash')
+    assert not verify_password('test', 'pbkdf2_sha256$999999999$salt$' + '0' * 64)
+
+
+def test_registration_preserves_legacy_duplicates(tmp_path):
+    from sqlalchemy import text
+    url = f"sqlite:///{tmp_path / 'duplicate-users.sqlite3'}"
+    engine, sessions = make_database(url)
+    with engine.begin() as connection:
+        connection.execute(text('CREATE TABLE users (id INTEGER PRIMARY KEY, username VARCHAR(255) NOT NULL, password_hash VARCHAR(255) NOT NULL, full_name VARCHAR(255), email VARCHAR(255), created_at DATETIME)'))
+        connection.execute(text("INSERT INTO users (id, username, password_hash, email) VALUES (1, 'legacy', 'unchanged', 'old@example.com'), (2, 'legacy', 'unchanged', 'old@example.com')"))
+    engine.dispose()
+    app = create_app(Settings(database_url=url, mqtt_enabled=False))
+    with TestClient(app) as client:
+        with app.state.sessions() as db:
+            assert len(db.query(User).all()) == 2
+        assert client.post('/api/auth/register', json=registration_body(username='LEGACY')).status_code == 409
+        assert client.post('/api/auth/register', json=registration_body(email='OLD@EXAMPLE.COM')).status_code == 409
+        assert client.post('/api/auth/register', json=registration_body()).status_code == 201
+        assert client.post('/api/auth/register', json=registration_body(email='different@example.com')).status_code == 409
 
 
 def test_swagger_declares_bearer_auth_for_protected_routes(client):
@@ -18,6 +133,7 @@ def test_swagger_declares_bearer_auth_for_protected_routes(client):
     for path, method in [('/api/devices/control', 'post'), ('/api/user/profile', 'get'), ('/api/auth/logout', 'post')]:
         assert schema['paths'][path][method]['security'] == [{'HTTPBearer': []}]
     assert not schema['paths']['/api/auth/login']['post'].get('security')
+    assert not schema['paths']['/api/auth/register']['post'].get('security')
 
 
 def test_control_requires_verified_session(client, connected):

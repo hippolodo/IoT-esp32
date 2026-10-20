@@ -12,10 +12,10 @@ const char* password = "68686868"; // Mật khẩu Wi-Fi
 const char* mqtt_server = "192.168.1.82"; // IP của Laptop (Broker)
 const int mqtt_port = 1884;
 
-const char* mqtt_user = "B23DCCN294"; 
+const char* mqtt_user = "B23DCCN294";
 const char* mqtt_pass = "271105";
 
-const char* status_topic = "esp32/status"; 
+const char* status_topic = "esp32/status";
 
 // ==========================================
 // 2. KHAI BÁO CHÂN GPIO (Cập nhật theo thực tế)
@@ -24,8 +24,8 @@ const char* status_topic = "esp32/status";
 #define DHTPIN 4         // Cảm biến DHT11 cắm ở D4
 #define DHTTYPE DHT11
 
-#define LED1_PIN 2       
-#define LED2_PIN 5     
+#define LED1_PIN 2
+#define LED2_PIN 5
 
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClient espClient;
@@ -33,7 +33,9 @@ PubSubClient client(espClient);
 
 unsigned long lastMsg = 0;
 unsigned long lastReconnectAttempt = 0;
-int lastMqttError = 0; 
+const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 2000;
+const unsigned long MQTT_RECONNECT_INTERVAL_MS = 2000;
+const unsigned long LED_SETTLE_MS = 10;
 
 // ==========================================
 // 3. HÀM KẾT NỐI WIFI
@@ -66,7 +68,7 @@ void setup_wifi() {
     }
   }
 
-  esp_wifi_set_ps(WIFI_PS_NONE); 
+  esp_wifi_set_ps(WIFI_PS_NONE);
   Serial.println("\n==> WIFI DA KET NOI THANH CONG!");
   Serial.print("IP ESP32: ");
   Serial.println(WiFi.localIP());
@@ -75,107 +77,51 @@ void setup_wifi() {
 // ==========================================
 // 4. HÀM NHẬN LỆNH & XÁC NHẬN BẰNG digitalRead
 // ==========================================
+bool publishLedStatus(uint8_t pin, const char* topic, uint8_t expectedState) {
+  bool success = digitalRead(pin) == expectedState;
+  const char* status = success ? (expectedState == HIGH ? "ON" : "OFF") : "FAIL";
+  client.publish(topic, status, true);
+  return success;
+}
+
+void controlLed(uint8_t pin, const char* statusTopic, uint8_t state) {
+  digitalWrite(pin, state);
+  delay(LED_SETTLE_MS);
+  Serial.println(publishLedStatus(pin, statusTopic, state) ? "Success" : "Failed");
+}
+
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
-  for (int i = 0; i < length; i++) {
+  for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
   }
-  
+
   String topicStr = String(topic);
   Serial.print("Nhan lenh Tu Mosquitto [");
   Serial.print(topicStr);
   Serial.print("]: ");
   Serial.println(message);
 
-  // --- KIỂM TRA LED 1 ---
-  if (topicStr == "esp32/led1/control") {
-    if (message == "ON" || message == "1") {
-      digitalWrite(LED1_PIN, HIGH);
-      delay(10); // Chờ 10ms để điện áp ổn định
-      
-      if (digitalRead(LED1_PIN) == HIGH) {
-        Serial.println("Success");
-        client.publish("esp32/led1/status", "ON", true); 
-      } else {
-        Serial.println("Failed");
-        client.publish("esp32/led1/status", "FAIL", true); 
-      }
-    } 
-    else if (message == "OFF" || message == "0") {
-      digitalWrite(LED1_PIN, LOW);
-      delay(10);
-      if (digitalRead(LED1_PIN) == LOW) {
-        Serial.println("Success");
-        client.publish("esp32/led1/status", "OFF", true);
-      } else {
-        Serial.println("Failed");
-        client.publish("esp32/led1/status", "FAIL", true);
-      }
-    }
-  } 
-  // --- KIỂM TRA LED 2 ---
-  else if (topicStr == "esp32/led2/control") {
-    if (message == "ON" || message == "1") {
-      digitalWrite(LED2_PIN, HIGH);
-      delay(10);
-      if (digitalRead(LED2_PIN) == HIGH) {
-        Serial.println("Success");
-        client.publish("esp32/led2/status", "ON", true); 
-      } else {
-        Serial.println("Failed");
-        client.publish("esp32/led2/status", "FAIL", true); 
-      }
-    } 
-    else if (message == "OFF" || message == "0") {
-      digitalWrite(LED2_PIN, LOW);
-      delay(10);
-      if (digitalRead(LED2_PIN) == LOW) {
-        Serial.println("Success");
-        client.publish("esp32/led2/status", "OFF", true);
-      } else {
-        Serial.println("Failed");
-        client.publish("esp32/led2/status", "FAIL", true);
-      }
-    }
+  uint8_t state;
+  if (message == "ON" || message == "1") {
+    state = HIGH;
+  } else if (message == "OFF" || message == "0") {
+    state = LOW;
+  } else {
+    return;
   }
-  // --- KIỂM TRA ĐIỀU KHIỂN TỔNG (ALL) ---
-  else if (topicStr == "esp32/led_all/control") {
-    if (message == "ON" || message == "1") {
-      digitalWrite(LED1_PIN, HIGH);
-      digitalWrite(LED2_PIN, HIGH);
-      delay(10);
-      
-      if (digitalRead(LED1_PIN) == HIGH) {
-        client.publish("esp32/led1/status", "ON", true); 
-      } else {
-        client.publish("esp32/led1/status", "FAIL", true); 
-      }
-      
-      if (digitalRead(LED2_PIN) == HIGH) {
-        client.publish("esp32/led2/status", "ON", true); 
-      } else {
-        client.publish("esp32/led2/status", "FAIL", true); 
-      }
-      Serial.println("Success");
-    } 
-    else if (message == "OFF" || message == "0") {
-      digitalWrite(LED1_PIN, LOW);
-      digitalWrite(LED2_PIN, LOW);
-      delay(10);
-      
-      if (digitalRead(LED1_PIN) == LOW) {
-        client.publish("esp32/led1/status", "OFF", true);
-      } else {
-        client.publish("esp32/led1/status", "FAIL", true);
-      }
-      
-      if (digitalRead(LED2_PIN) == LOW) {
-        client.publish("esp32/led2/status", "OFF", true);
-      } else {
-        client.publish("esp32/led2/status", "FAIL", true);
-      }
-      Serial.println("Success");
-    }
+
+  if (topicStr == "esp32/led1/control") {
+    controlLed(LED1_PIN, "esp32/led1/status", state);
+  } else if (topicStr == "esp32/led2/control") {
+    controlLed(LED2_PIN, "esp32/led2/status", state);
+  } else if (topicStr == "esp32/led_all/control") {
+    digitalWrite(LED1_PIN, state);
+    digitalWrite(LED2_PIN, state);
+    delay(LED_SETTLE_MS);
+    publishLedStatus(LED1_PIN, "esp32/led1/status", state);
+    publishLedStatus(LED2_PIN, "esp32/led2/status", state);
+    Serial.println("Success");
   }
 }
 
@@ -192,10 +138,10 @@ bool reconnect() {
   Serial.print("Dang ket noi den Mosquitto (");
   Serial.print(mqtt_server);
   Serial.print(")... ");
-  
+
   String clientId = "ESP32Client-";
   clientId += String(random(0xffff), HEX);
-  
+
   bool isConnected = false;
   const char* willTopic = status_topic;
   const char* willMessage = "STATUS: OFFLINE (Mat ket noi dot ngot)";
@@ -222,9 +168,8 @@ bool reconnect() {
     client.publish("esp32/led2/status", digitalRead(LED2_PIN) ? "ON" : "OFF", true);
 
   } else {
-    lastMqttError = client.state();
     Serial.print("That bai! Ma loi rc=");
-    Serial.println(lastMqttError);
+    Serial.println(client.state());
   }
   return client.connected();
 }
@@ -235,18 +180,18 @@ bool reconnect() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  
+
   pinMode(LED1_PIN, OUTPUT);
   pinMode(LED2_PIN, OUTPUT);
   digitalWrite(LED1_PIN, LOW);
   digitalWrite(LED2_PIN, LOW);
-  
+
   pinMode(LDRPIN, INPUT);
   pinMode(DHTPIN, INPUT_PULLUP);
 
   dht.begin();
   setup_wifi();
-  
+
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
   client.setKeepAlive(15);
@@ -259,18 +204,18 @@ void setup() {
 void loop() {
   if (!client.connected()) {
     unsigned long now = millis();
-    if (now - lastReconnectAttempt > 2000) { 
+    if (now - lastReconnectAttempt > MQTT_RECONNECT_INTERVAL_MS) {
       lastReconnectAttempt = now;
       if (reconnect()) {
         lastReconnectAttempt = 0;
       }
     }
   } else {
-    client.loop(); 
+    client.loop();
   }
 
   unsigned long now = millis();
-  if (now - lastMsg > 2000) {
+  if (now - lastMsg > SENSOR_PUBLISH_INTERVAL_MS) {
     lastMsg = now;
 
     int anh_sang = analogRead(LDRPIN);
@@ -281,8 +226,8 @@ void loop() {
     if (isnan(do_am) || isnan(nhiet_do)) {
       payload = "{\"error\": \"Loi doc DHT11!\", \"light\": " + String(anh_sang) + "}";
     } else {
-      payload = "{\"light\":" + String(anh_sang) + 
-                ", \"temperature\":" + String(nhiet_do, 1) + 
+      payload = "{\"light\":" + String(anh_sang) +
+                ", \"temperature\":" + String(nhiet_do, 1) +
                 ", \"humidity\":" + String(do_am, 1) + "}";
     }
 

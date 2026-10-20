@@ -48,13 +48,39 @@ LDR GPIO 33 với đơn vị ADC. Database cũ giữ nguyên metadata: nếu tr�
 18/19/21 hoặc đơn vị lux, cần đối chiếu phần cứng và cập nhật thủ công.
 Các bản ghi đo và lịch sử hiện có được giữ nguyên.
 
-Tài khoản mới trên database trống: `admin` / `123456`. Tiếp tục đọc SHA-256 để
-đăng nhập bằng tài khoản Java cũ. Đăng nhập trả `accessToken` có hiệu lực 24 giờ;
+Tài khoản mới trên database trống: `admin` / `123456`. Có thể tạo tài khoản bằng
+nút **Chưa có tài khoản? Đăng ký** trên FE hoặc `POST /api/auth/register`.
+Tài khoản mới dùng PBKDF2-SHA256 (600.000 vòng, salt ngẫu nhiên); đăng nhập vẫn
+đọc SHA-256 để tương thích tài khoản Java/seed cũ. Đăng nhập trả `accessToken` có hiệu lực 24 giờ;
 frontend giữ token trong `sessionStorage` và gửi header `Authorization: Bearer <accessToken>`.
 Điều khiển thiết bị và xem hồ sơ yêu cầu token hợp lệ; hồ sơ trả đúng người đăng nhập,
 không trả `passwordHash`. Đăng xuất thu hồi token phía backend.
 Backend lấy người thực hiện từ phiên đăng nhập, không nhận `userId` do FE tự khai báo.
 API lịch sử trả thêm `userId`; các bản ghi cũ trả null.
+
+Đăng ký không yêu cầu token, nhận JSON:
+
+```json
+{
+  "username": "new_user",
+  "fullName": "Nguyễn Văn Hiệp",
+  "email": "hiep@example.com",
+  "password": "example-password-123",
+  "confirmPassword": "example-password-123"
+}
+```
+
+Tên đăng nhập gồm 3–50 ký tự chữ ASCII, số, `.`, `_`, `-`; họ tên bắt buộc và tối đa
+255 ký tự; email phải hợp lệ và tối đa 255 ký tự. Tên đăng nhập/email được bỏ khoảng
+trắng ở hai đầu và chuyển chữ thường. Mật khẩu dài 8–128 ký tự và phải khớp xác nhận.
+Thành công trả HTTP 201 với `userId,username,fullName,email`; không trả mật khẩu/hash
+hoặc token. FE chuyển về đăng nhập và điền sẵn username; đăng nhập mới cấp phiên.
+Dữ liệu không hợp lệ trả 400, trùng tên đăng nhập/email trả 409.
+
+Backend thêm unique index tên đăng nhập/email vào database cũ khi dữ liệu cho phép,
+không xóa/sửa tài khoản hiện có. Nếu có dữ liệu trùng từ trước, giữ nguyên dữ liệu,
+ghi log và bỏ qua index tương ứng. Luồng đăng ký có khóa trong tiến trình để kiểm tra
+trùng và tạo tài khoản tuần tự, phù hợp cấu hình một worker được hướng dẫn ở trên.
 
 Trong Swagger (`/docs`), gọi `/api/auth/login`, sao chép `data.accessToken`,
 bấm **Authorize** và dán token (không thêm chữ `Bearer`). Swagger sẽ gửi token
@@ -67,6 +93,7 @@ khi gọi API điều khiển, hồ sơ và đăng xuất. Sau khi đăng xuất
 | --- | --- | --- |
 | GET | `/api/auth/health` | |
 | GET | `/api/system/status` | `mqttConnected`, `esp32Online` (null nếu chưa biết) |
+| POST | `/api/auth/register` | `username,fullName,email,password,confirmPassword` → 201; 400 nếu sai, 409 nếu trùng |
 | POST | `/api/auth/login` | `{"username":"admin","password":"123456"}` |
 | POST | `/api/auth/logout` | Yêu cầu Bearer token, thu hồi phiên hiện tại |
 | GET | `/api/user/profile` | |

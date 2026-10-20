@@ -1,10 +1,15 @@
 import hashlib
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, String, create_engine, select, func, inspect, text
+from sqlalchemy import (
+    BigInteger, DateTime, Float, ForeignKey, Index, Integer, String,
+    create_engine, func, inspect, select, text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
+log = logging.getLogger(__name__)
 
 def now():
     # Match the old MySQL local datetime contract, regardless of host timezone.
@@ -57,6 +62,10 @@ class History(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        Index("uq_users_username", "username", unique=True),
+        Index("uq_users_email", "email", unique=True),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(255))
     password_hash: Mapped[str] = mapped_column(String(255))
@@ -78,6 +87,19 @@ def initialize_database(engine):
     if "user_id" not in {column["name"] for column in inspect(engine).get_columns("histories")}:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE histories ADD COLUMN user_id INTEGER NULL REFERENCES users(id)"))
+
+    # Existing databases keep their rows; add uniqueness when legacy data permits it.
+    for index in User.__table__.indexes:
+        column = next(iter(index.columns))
+        with engine.connect() as connection:
+            duplicates = connection.execute(
+                select(column).where(column.is_not(None)).group_by(column)
+                .having(func.count() > 1).limit(1)
+            ).first()
+        if duplicates is None:
+            index.create(engine, checkfirst=True)
+        else:
+            log.warning("Skipped index %s: duplicate values exist in legacy users", index.name)
 
 
 def make_database(url):

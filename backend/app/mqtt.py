@@ -13,6 +13,9 @@ from .contracts import date_string
 from .database import DataSensor, Device, History, Sensor, now
 
 log = logging.getLogger(__name__)
+ESP32_OFFLINE_TIMEOUT_SECONDS = 20
+MQTT_KEEPALIVE_SECONDS = 15
+SENSOR_KEYS = ("temperature", "humidity", "light")
 
 
 class ControlError(Exception):
@@ -54,7 +57,10 @@ class MqttService:
 
     def start(self):
         if self.settings.mqtt_enabled:
-            self.client.connect_async(self.settings.mqtt_host, self.settings.mqtt_port, keepalive=15)
+            self.client.connect_async(
+                self.settings.mqtt_host, self.settings.mqtt_port,
+                keepalive=MQTT_KEEPALIVE_SECONDS,
+            )
             self.client.loop_start()
 
     def stop(self):
@@ -77,7 +83,7 @@ class MqttService:
     def connection_status(self):
         connected = bool(self.settings.mqtt_enabled and self.client.is_connected())
         online = self.esp_online if connected else None
-        if online and self.last_seen is not None and monotonic() - self.last_seen > 20:
+        if online and self.last_seen is not None and monotonic() - self.last_seen > ESP32_OFFLINE_TIMEOUT_SECONDS:
             online = False
         return {"mqttConnected": connected, "esp32Online": online}
 
@@ -107,7 +113,7 @@ class MqttService:
             raise ValueError("Sensor payload must be a JSON object")
         clean = {}
         with self.sessions.begin() as db:
-            for key in ("temperature", "humidity", "light"):
+            for key in SENSOR_KEYS:
                 value = values.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                     continue

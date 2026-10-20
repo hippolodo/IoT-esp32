@@ -1,35 +1,53 @@
 import asyncio
 import hashlib
-import hmac
 import logging
+import re
 import secrets
+import threading
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 
 import anyio
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, StrictInt
 from sqlalchemy import String, cast, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException
 
 from .config import Settings
-from .contracts import (data_dict, device_dict, envelope, history_dict, paginate,
-                        parse_date, sensor_dict, time_range)
-from .database import AuthSession, DataSensor, Device, History, Sensor, User, initialize_database, make_database, now, seed_database
+from .contracts import (
+    data_dict, device_dict, envelope, history_dict, paginate,
+    parse_date, sensor_dict, time_range,
+)
+from .database import (
+    AuthSession, DataSensor, Device, History, Sensor, User,
+    initialize_database, make_database, now, seed_database,
+)
 from .mqtt import ControlError, EventHub, MqttService
+from .passwords import hash_password, verify_password
 
 log = logging.getLogger(__name__)
+SESSION_LIFETIME = timedelta(hours=24)
+COMMAND_CHECK_INTERVAL_SECONDS = 1
 bearer_auth = HTTPBearer(auto_error=False, description="Dán accessToken nhận từ /api/auth/login để xác thực.")
 
 
 class LoginRequest(BaseModel):
     username: str | None = None
     password: str | None = None
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    fullName: str
+    email: str
+    password: str
+    confirmPassword: str
 
 
 class DeviceControlRequest(BaseModel):
@@ -42,10 +60,11 @@ def create_app(settings=None):
     engine, sessions = make_database(settings.database_url)
     hub = EventHub()
     mqtt = MqttService(settings, sessions, hub)
+    registration_lock = threading.Lock()
 
     async def expire_commands():
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(COMMAND_CHECK_INTERVAL_SECONDS)
             try:
                 await asyncio.to_thread(mqtt.expire_pending)
             except Exception:
@@ -77,7 +96,10 @@ def create_app(settings=None):
         with sessions() as db:
             yield db
 
-    def current_session(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_auth), db: Session = Depends(database)):
+    def current_session(
+        credentials: HTTPAuthorizationCredentials | None = Depends(bearer_auth),
+        db: Session = Depends(database),
+    ):
         token = credentials.credentials if credentials else None
         session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
         if session is None or session.expires_at <= now() or db.get(User, session.user_id) is None:
@@ -125,19 +147,57 @@ def create_app(settings=None):
             History.device_id == row.id, History.status == "PENDING")).first() is not None
         return result
 
+    @app.post("/api/auth/register", status_code=201)
+    def register(body: RegisterRequest, db: Session = Depends(database)):
+        username = body.username.strip().lower()
+        full_name = body.fullName.strip()
+        email = body.email.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_.-]{3,50}", username):
+            raise ControlError("Tên đăng nhập cần 3–50 ký tự: chữ, số, dấu chấm, gạch dưới hoặc gạch ngang", 400)
+        if not full_name or len(full_name) > 255:
+            raise ControlError("Họ tên cần từ 1 đến 255 ký tự", 400)
+        if len(email) > 255 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ControlError("Email không hợp lệ", 400)
+        if not 8 <= len(body.password) <= 128 or not body.password.strip():
+            raise ControlError("Mật khẩu cần từ 8 đến 128 ký tự", 400)
+        if body.password != body.confirmPassword:
+            raise ControlError("Xác nhận mật khẩu không khớp", 400)
+
+        # Serialize registration in the single-worker deployment, including legacy
+        # databases whose duplicate rows prevented adding a unique index.
+        with registration_lock:
+            if db.scalar(select(User.id).where(func.lower(User.username) == username)) is not None:
+                raise ControlError("Tên đăng nhập đã được sử dụng", 409)
+            if db.scalar(select(User.id).where(func.lower(User.email) == email)) is not None:
+                raise ControlError("Email đã được sử dụng", 409)
+            user = User(
+                username=username, full_name=full_name, email=email,
+                password_hash=hash_password(body.password),
+            )
+            db.add(user)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                raise ControlError("Tên đăng nhập hoặc email đã được sử dụng", 409) from None
+        return envelope(
+            dict(userId=user.id, username=user.username, fullName=user.full_name, email=user.email),
+            "Đăng ký tài khoản thành công. Vui lòng đăng nhập.", code=201,
+        )
+
     @app.post("/api/auth/login")
     def login(body: LoginRequest, db: Session = Depends(database)):
         if not body.username:
             raise ControlError("Username không được để trống", 400)
         if not body.password:
             raise ControlError("Password không được để trống", 400)
-        user = db.scalars(select(User).where(User.username == body.username)).first()
-        hashed = hashlib.sha256(body.password.encode()).hexdigest()
-        if not user or not hmac.compare_digest(user.password_hash, hashed):
+        username = body.username.strip().lower()
+        user = db.scalars(select(User).where(func.lower(User.username) == username)).first()
+        if not user or not verify_password(body.password, user.password_hash):
             raise ControlError("Sai tài khoản hoặc mật khẩu", 401)
         token = secrets.token_urlsafe(32)
         db.add(AuthSession(token_hash=hashlib.sha256(token.encode()).hexdigest(),
-                           user_id=user.id, expires_at=now() + timedelta(hours=24)))
+                           user_id=user.id, expires_at=now() + SESSION_LIFETIME))
         db.commit()
         return envelope(dict(userId=user.id, username=user.username, fullName=user.full_name, accessToken=token,
                              email=user.email, success=True, message="Đăng nhập thành công"), "Đăng nhập thành công")
@@ -150,7 +210,6 @@ def create_app(settings=None):
 
     @app.get("/api/user/profile")
     def profile(user: User = Depends(current_user)):
-        # Do not expose passwordHash, even though the former entity serializer did.
         return envelope(dict(id=user.id, username=user.username, fullName=user.full_name,
                              email=user.email, createdAt=user.created_at.isoformat() if user.created_at else None),
                         "Lấy thông tin user thành công")
@@ -165,7 +224,7 @@ def create_app(settings=None):
         if body.status not in (0, 1):
             raise ControlError("Status phải là 0 (OFF) hoặc 1 (ON)", 400)
         mqtt.control(body.deviceId, body.status, user_id=user.id)
-        # Preserve the legacy response; state remains unchanged until the ESP32 ACK.
+        # Device state changes only after the ESP32 acknowledgment.
         return envelope("OK", "Bật thiết bị thành công" if body.status else "Tắt thiết bị thành công")
 
     @app.get("/api/devices/{id}")

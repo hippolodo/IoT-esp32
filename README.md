@@ -12,7 +12,7 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
 | Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
-| Kiểm thử | 20 kiểm thử backend và 2 kiểm thử frontend đã đạt |
+| Kiểm thử | 45 kiểm thử backend và 3 kiểm thử frontend đã đạt |
 | Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
 Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái
@@ -129,6 +129,9 @@ Chạy backend bằng một worker:
 - Đặt `MQTT_ENABLED=false` khi muốn chạy API/database mà chưa có broker.
 
 Trên database mới, tài khoản mẫu là `admin` / `123456`.
+Có thể tạo tài khoản riêng bằng **Chưa có tài khoản? Đăng ký** trên giao diện.
+Form yêu cầu tên đăng nhập, họ tên, email, mật khẩu 8–128 ký tự và xác nhận mật khẩu;
+kiểm tra tên/email trùng. Đăng ký thành công sẽ chuyển về đăng nhập với username điền sẵn.
 Đăng nhập cấp token phiên có hiệu lực 24 giờ. Frontend tự gửi token khi gọi API;
 điều khiển thiết bị và xem hồ sơ yêu cầu đăng nhập. Lịch sử điều khiển mới lưu `userId`
 của người đăng nhập, lịch sử cũ chưa có người thực hiện hiển thị `—`.
@@ -223,8 +226,9 @@ có một lệnh đang chờ. Đọc lại GPIO xác nhận mức logic, chưa x
 | Method | Endpoint | Chức năng |
 | --- | --- | --- |
 | GET | `/api/auth/health` | Kiểm tra backend |
+| POST | `/api/auth/register` | Đăng ký tài khoản mới |
 | POST | `/api/auth/login` | Đăng nhập |
-| GET | `/api/user/profile` | Đọc hồ sơ admin |
+| GET | `/api/user/profile` | Đọc hồ sơ người đang đăng nhập |
 | GET | `/api/devices` | Danh sách thiết bị |
 | GET | `/api/devices/{id}` | Chi tiết thiết bị |
 | POST | `/api/devices/control` | Gửi lệnh bật/tắt |

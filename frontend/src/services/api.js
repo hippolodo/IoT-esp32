@@ -14,8 +14,12 @@ export async function api(path, { query, ...options } = {}) {
   })
   try {
     const response = await fetch(`${base}${path}${params.size ? `?${params}` : ''}`, {
-      ...options, headers: { 'Content-Type': 'application/json',
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}), ...options.headers },
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...options.headers,
+      },
       signal: options.signal || AbortSignal.timeout(10000),
     })
     const body = await response.json().catch(() => null)
@@ -27,7 +31,8 @@ export async function api(path, { query, ...options } = {}) {
     return body.data
   } catch (error) {
     if (error.name === 'TimeoutError') throw new Error('Backend phản hồi quá chậm. Vui lòng thử lại.')
-    if (error instanceof TypeError) throw new Error('Không kết nối được backend. Kiểm tra FastAPI ở cổng 8088.')
+    if (error instanceof TypeError)
+      throw new Error('Không kết nối được backend. Kiểm tra FastAPI ở cổng 8088.')
     throw error
   }
 }

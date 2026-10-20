@@ -1,8 +1,3 @@
-# Maven & Build
-**/target/
-**/.mvn/wrapper/maven-wrapper.jar
-*.class
-
 # IDE & OS
 .vscode/
 .idea/
