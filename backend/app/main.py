@@ -34,6 +34,8 @@ from .passwords import hash_password, verify_password
 log = logging.getLogger(__name__)
 SESSION_LIFETIME = timedelta(hours=24)
 COMMAND_CHECK_INTERVAL_SECONDS = 1
+WEBSOCKET_AUTH_TIMEOUT_SECONDS = 5
+WEBSOCKET_SESSION_CHECK_SECONDS = 5
 bearer_auth = HTTPBearer(auto_error=False, description="Dán accessToken nhận từ /api/auth/login để xác thực.")
 
 
@@ -87,7 +89,17 @@ def create_app(settings=None):
             hub.loop = None
             engine.dispose()
 
-    app = FastAPI(title="IoT ESP32 Backend", version="1.0.0", lifespan=lifespan)
+    app = FastAPI(
+        title="IoT ESP32 Backend", version="1.0.0", lifespan=lifespan,
+        openapi_tags=[
+            {"name": "Xác thực", "description": "Đăng ký, đăng nhập và đăng xuất tài khoản."},
+            {"name": "Người dùng", "description": "Hồ sơ của tài khoản đang đăng nhập."},
+            {"name": "Thiết bị", "description": "Danh sách, trạng thái và điều khiển đèn."},
+            {"name": "Cảm biến", "description": "Danh mục, số đo mới nhất và tra cứu dữ liệu cảm biến."},
+            {"name": "Lịch sử", "description": "Tra cứu và lọc lịch sử điều khiển thiết bị."},
+            {"name": "Hệ thống", "description": "Kiểm tra backend và trạng thái kết nối MQTT, ESP32."},
+        ],
+    )
     app.state.sessions, app.state.mqtt, app.state.hub = sessions, mqtt, hub
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
                        allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -96,15 +108,25 @@ def create_app(settings=None):
         with sessions() as db:
             yield db
 
+    def authenticate_token(token, db):
+        session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if isinstance(token, str) and token else None
+        if session is None or session.expires_at <= now() or db.get(User, session.user_id) is None:
+            raise ControlError("Vui lòng đăng nhập để tiếp tục", 401)
+        return session
+
     def current_session(
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_auth),
         db: Session = Depends(database),
     ):
-        token = credentials.credentials if credentials else None
-        session = db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()) if token else None
-        if session is None or session.expires_at <= now() or db.get(User, session.user_id) is None:
-            raise ControlError("Vui lòng đăng nhập để tiếp tục", 401)
-        return session
+        return authenticate_token(credentials.credentials if credentials else None, db)
+
+    def websocket_session_valid(token):
+        with sessions() as db:
+            try:
+                authenticate_token(token, db)
+                return True
+            except ControlError:
+                return False
 
     def current_user(session: AuthSession = Depends(current_session), db: Session = Depends(database)):
         return db.get(User, session.user_id)
@@ -130,11 +152,11 @@ def create_app(settings=None):
         log.error("Request failed: %s", request.url.path, exc_info=exc)
         return JSONResponse(envelope(message="Lỗi hệ thống", code=500), status_code=500)
 
-    @app.get("/api/auth/health")
+    @app.get("/api/auth/health", tags=["Hệ thống"])
     def health():
         return envelope("OK", "Backend đang chạy")
 
-    @app.get("/api/system/status")
+    @app.get("/api/system/status", tags=["Hệ thống"], dependencies=[Depends(current_session)])
     def system_status():
         return envelope(mqtt.connection_status(), "Trạng thái kết nối")
 
@@ -147,7 +169,7 @@ def create_app(settings=None):
             History.device_id == row.id, History.status == "PENDING")).first() is not None
         return result
 
-    @app.post("/api/auth/register", status_code=201)
+    @app.post("/api/auth/register", status_code=201, tags=["Xác thực"])
     def register(body: RegisterRequest, db: Session = Depends(database)):
         username = body.username.strip().lower()
         full_name = body.fullName.strip()
@@ -185,7 +207,7 @@ def create_app(settings=None):
             "Đăng ký tài khoản thành công. Vui lòng đăng nhập.", code=201,
         )
 
-    @app.post("/api/auth/login")
+    @app.post("/api/auth/login", tags=["Xác thực"])
     def login(body: LoginRequest, db: Session = Depends(database)):
         if not body.username:
             raise ControlError("Username không được để trống", 400)
@@ -202,24 +224,24 @@ def create_app(settings=None):
         return envelope(dict(userId=user.id, username=user.username, fullName=user.full_name, accessToken=token,
                              email=user.email, success=True, message="Đăng nhập thành công"), "Đăng nhập thành công")
 
-    @app.post("/api/auth/logout")
+    @app.post("/api/auth/logout", tags=["Xác thực"])
     def logout(session: AuthSession = Depends(current_session), db: Session = Depends(database)):
         db.delete(session)
         db.commit()
         return envelope("OK", "Đã đăng xuất")
 
-    @app.get("/api/user/profile")
+    @app.get("/api/user/profile", tags=["Người dùng"])
     def profile(user: User = Depends(current_user)):
         return envelope(dict(id=user.id, username=user.username, fullName=user.full_name,
                              email=user.email, createdAt=user.created_at.isoformat() if user.created_at else None),
                         "Lấy thông tin user thành công")
 
-    @app.get("/api/devices")
+    @app.get("/api/devices", tags=["Thiết bị"], dependencies=[Depends(current_session)])
     def devices(db: Session = Depends(database)):
         return envelope([device_response(d, db) for d in db.scalars(select(Device).order_by(Device.id))],
                         "Lấy danh sách thiết bị thành công")
 
-    @app.post("/api/devices/control")
+    @app.post("/api/devices/control", tags=["Thiết bị"])
     def control(body: DeviceControlRequest, user: User = Depends(current_user)):
         if body.status not in (0, 1):
             raise ControlError("Status phải là 0 (OFF) hoặc 1 (ON)", 400)
@@ -227,19 +249,19 @@ def create_app(settings=None):
         # Device state changes only after the ESP32 acknowledgment.
         return envelope("OK", "Bật thiết bị thành công" if body.status else "Tắt thiết bị thành công")
 
-    @app.get("/api/devices/{id}")
+    @app.get("/api/devices/{id}", tags=["Thiết bị"], dependencies=[Depends(current_session)])
     def device(id: int, db: Session = Depends(database)):
         row = db.get(Device, id)
         if row is None:
             raise ControlError("Không tìm thấy thiết bị", 404)
         return envelope(device_response(row, db), "Lấy thông tin thiết bị thành công")
 
-    @app.get("/api/sensors")
+    @app.get("/api/sensors", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def sensors(db: Session = Depends(database)):
         return envelope([sensor_dict(s) for s in db.scalars(select(Sensor).order_by(Sensor.id))],
                         "Lấy danh sách cảm biến thành công")
 
-    @app.get("/api/sensors/latest")
+    @app.get("/api/sensors/latest", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def latest(db: Session = Depends(database)):
         rows = []
         for sensor_id in db.scalars(select(Sensor.id)):
@@ -250,7 +272,7 @@ def create_app(settings=None):
         rows.sort(key=lambda r: (r.recorded_at or datetime.min, r.id), reverse=True)
         return envelope([data_dict(r) for r in rows], "Lấy dữ liệu cảm biến gần đây thành công")
 
-    @app.get("/api/sensors/data")
+    @app.get("/api/sensors/data", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def sensor_data(sensorId: int | None = None, startTime: str | None = None, endTime: str | None = None,
                     page: int = 0, size: int = 10, sensorType: str | None = None,
                     value: str | None = None, db: Session = Depends(database)):
@@ -267,7 +289,7 @@ def create_app(settings=None):
         query = query.order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc())
         return envelope(paginate(db, query, page, size, data_dict), "Lấy dữ liệu cảm biến thành công")
 
-    @app.get("/api/sensors/filter")
+    @app.get("/api/sensors/filter", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def filter_sensors(type: str, startDate: str, endDate: str, page: int = 0, size: int = 10,
                        db: Session = Depends(database)):
         start, end = parse_date(startDate), parse_date(endDate)
@@ -297,14 +319,14 @@ def create_app(settings=None):
         query = query.order_by(History.timestamp.asc(), History.id.asc()) if sort == "asc" else query.order_by(History.timestamp.desc(), History.id.desc())
         return paginate(db, query, page, size, history_dict)
 
-    @app.get("/api/history")
+    @app.get("/api/history", tags=["Lịch sử"], dependencies=[Depends(current_session)])
     def history(deviceId: int | None = None, status: str | None = None, startTime: str | None = None,
                 endTime: str | None = None, page: int = 0, size: int = 10, action: str | None = None,
                 sort: str = "desc", db: Session = Depends(database)):
         start, end = time_range(startTime, endTime)
         return envelope(history_page(db, deviceId, status, start, end, page, size, action=action, sort=sort), "Lấy lịch sử thành công")
 
-    @app.get("/api/history/filter")
+    @app.get("/api/history/filter", tags=["Lịch sử"], dependencies=[Depends(current_session)])
     def filter_history(deviceId: int | None = None, status: str | None = None, startTime: str | None = None,
                        endTime: str | None = None, page: int = 0, size: int = 10, db: Session = Depends(database)):
         if deviceId is None or status is None:
@@ -322,13 +344,37 @@ def create_app(settings=None):
             await ws.close(code=1008)
             return
         await ws.accept()
+        authorization = ws.headers.get("authorization", "").split()
+        token = authorization[1] if len(authorization) == 2 and authorization[0].lower() == "bearer" else None
+        if token is None:
+            try:
+                # Browsers cannot set Authorization on the WebSocket handshake.
+                # Receive credentials in the first frame instead of a URL query.
+                auth = await asyncio.wait_for(ws.receive_json(), WEBSOCKET_AUTH_TIMEOUT_SECONDS)
+            except WebSocketDisconnect:
+                return
+            except (asyncio.TimeoutError, ValueError, TypeError, KeyError):
+                await ws.close(code=4401)
+                return
+            token = auth.get("token") if isinstance(auth, dict) and auth.get("type") == "auth" else None
+        if not await asyncio.to_thread(websocket_session_valid, token):
+            await ws.close(code=4401)
+            return
+        await ws.send_json({"type": "authenticated"})
         queue = asyncio.Queue(maxsize=100)
         hub.subscribers.add(queue)
 
         async def send_events():
             while True:
-                event = await queue.get()
-                if ws.query_params.get("topic") in (None, event["topic"]):
+                try:
+                    event = await asyncio.wait_for(queue.get(), WEBSOCKET_SESSION_CHECK_SECONDS)
+                except asyncio.TimeoutError:
+                    event = None
+                if not await asyncio.to_thread(websocket_session_valid, token):
+                    await ws.close(code=4401)
+                    group.cancel_scope.cancel()
+                    return
+                if event is not None and ws.query_params.get("topic") in (None, event["topic"]):
                     await ws.send_json(event)
 
         async def receive_events():

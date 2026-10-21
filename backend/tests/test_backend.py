@@ -134,6 +134,44 @@ def test_swagger_declares_bearer_auth_for_protected_routes(client):
         assert schema['paths'][path][method]['security'] == [{'HTTPBearer': []}]
     assert not schema['paths']['/api/auth/login']['post'].get('security')
     assert not schema['paths']['/api/auth/register']['post'].get('security')
+    public = {'/api/auth/health', '/api/auth/login', '/api/auth/register'}
+    for path, operations in schema['paths'].items():
+        for method, operation in operations.items():
+            if method not in {'get', 'post'}:
+                continue
+            assert bool(operation.get('security')) == (path not in public)
+
+
+PROTECTED_GETS = [
+    '/api/system/status', '/api/user/profile', '/api/devices', '/api/devices/1',
+    '/api/sensors', '/api/sensors/latest', '/api/sensors/data',
+    '/api/sensors/filter?type=LIGHT&startDate=2026-10-21&endDate=2026-10-21',
+    '/api/history', '/api/history/filter?deviceId=1&status=SUCCESS',
+]
+
+
+@pytest.mark.parametrize('path', PROTECTED_GETS)
+def test_read_apis_require_valid_session(client, path):
+    original = client.headers.pop('Authorization')
+    response = client.get(path)
+    assert response.status_code == 401 and response.json()['success'] is False
+    client.headers['Authorization'] = 'Bearer forged-token'
+    assert client.get(path).status_code == 401
+    client.headers['Authorization'] = original
+    assert client.get(path).status_code == 200
+
+
+@pytest.mark.parametrize('revoke', ['expired', 'logout'])
+def test_read_apis_reject_expired_or_revoked_session(client, revoke):
+    if revoke == 'logout':
+        assert client.post('/api/auth/logout').status_code == 200
+    else:
+        token = client.headers['Authorization'].split()[1]
+        with client.app.state.sessions.begin() as db:
+            db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()).expires_at = now() - timedelta(seconds=1)
+    for path in PROTECTED_GETS:
+        assert client.get(path).status_code == 401
+    assert client.get('/api/auth/health').status_code == 200
 
 
 def test_control_requires_verified_session(client, connected):
@@ -309,6 +347,7 @@ def test_publish_failure_timeout_and_unmapped(client, connected):
 
 def test_websocket_sensor_and_device_events(client):
     with client.websocket_connect('/ws') as ws:
+        assert ws.receive_json() == {'type': 'authenticated'}
         client.app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
         assert ws.receive_json() == {'topic': '/topic/sensors', 'data': {'light': 123}}
         client.app.state.mqtt.handle_message('esp32/led1/status', 'ON')
@@ -319,9 +358,59 @@ def test_websocket_sensor_and_device_events(client):
 
 def test_websocket_topic_filter(client):
     with client.websocket_connect('/ws?topic=/topic/device-status') as ws:
+        assert ws.receive_json() == {'type': 'authenticated'}
         client.app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
         client.app.state.mqtt.handle_message('esp32/led2/status', 'OFF')
         assert ws.receive_json()['topic'] == '/topic/device-status'
+
+
+def test_browser_websocket_authenticates_first_frame(client):
+    token = client.headers['Authorization'].split()[1]
+    with client.websocket_connect('/ws?topic=/topic/sensors', headers={'Authorization': ''}) as ws:
+        ws.send_json({'type': 'auth', 'token': token})
+        assert ws.receive_json() == {'type': 'authenticated'}
+        client.app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
+        assert ws.receive_json() == {'topic': '/topic/sensors', 'data': {'light': 123}}
+
+
+@pytest.mark.parametrize('auth', [{}, {'type': 'auth', 'token': 'forged'},
+                                   {'type': 'auth', 'token': None}, ['not-an-object']])
+def test_websocket_rejects_invalid_auth_frame(client, auth):
+    from starlette.websockets import WebSocketDisconnect
+    with client.websocket_connect('/ws', headers={'Authorization': ''}) as ws:
+        ws.send_json(auth)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+    assert not client.app.state.hub.subscribers
+
+
+def test_websocket_requires_auth_before_subscribing(client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    monkeypatch.setattr('app.main.WEBSOCKET_AUTH_TIMEOUT_SECONDS', 0.02)
+    with client.websocket_connect('/ws', headers={'Authorization': ''}) as ws:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+    assert not client.app.state.hub.subscribers
+
+
+@pytest.mark.parametrize('revoke', ['expired', 'logout'])
+def test_open_websocket_closes_when_session_invalid_without_events(client, monkeypatch, revoke):
+    from starlette.websockets import WebSocketDisconnect
+    monkeypatch.setattr('app.main.WEBSOCKET_SESSION_CHECK_SECONDS', 0.02)
+    with client.websocket_connect('/ws') as ws:
+        assert ws.receive_json() == {'type': 'authenticated'}
+        if revoke == 'logout':
+            assert client.post('/api/auth/logout').status_code == 200
+        else:
+            token = client.headers['Authorization'].split()[1]
+            with client.app.state.sessions.begin() as db:
+                db.get(AuthSession, hashlib.sha256(token.encode()).hexdigest()).expires_at = now() - timedelta(seconds=1)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4401
+    assert not client.app.state.hub.subscribers
 
 
 def test_reconnect_resubscribes_and_invalid_sensor_values(client):

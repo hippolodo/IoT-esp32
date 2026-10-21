@@ -8,7 +8,7 @@ const EVENT_DEBOUNCE_MS = 250
 export function usePage(path, query, eventTopic) {
   const rows = ref([]),
     currentPage = ref(1),
-    itemsPerPage = ref(8)
+    itemsPerPage = ref(10)
   const total = ref(0),
     totalPages = ref(0),
     loading = ref(false),

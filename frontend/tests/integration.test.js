@@ -1,10 +1,57 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { api, websocketUrl, setAccessToken } from '../src/services/api.js'
-import { system, startSystem, stopSystem, toggleDevice } from '../src/services/system.js'
+import { system, startSystem, stopSystem, toggleDevice, controlAllDevices } from '../src/services/system.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const ok = data => ({ ok: true, json: async () => ({ success: true, data }) })
+
+test('bulk control sends explicit states, prevents duplicates and reports partial failure', async () => {
+  const devices = [
+    { id: 1, name: 'LED 1', status: 0, controllable: true, pending: false },
+    { id: 2, name: 'LED 2', status: 0, controllable: true, pending: false },
+    { id: 3, name: 'Unmapped', status: 0, controllable: false, pending: false },
+    { id: 4, name: 'Already on', status: 1, controllable: true, pending: false },
+  ]
+  Object.assign(system, { devices, backendOnline: true, mqttConnected: true, esp32Online: true })
+  const posted = []
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  globalThis.fetch = async (url, options) => {
+    if (url === '/api/devices') return ok(devices)
+    const command = JSON.parse(options.body)
+    posted.push(command)
+    await gate
+    if (command.deviceId === 2)
+      return { ok: false, status: 503, json: async () => ({ message: 'MQTT offline' }) }
+    devices[0].pending = true
+    return ok('OK')
+  }
+  const request = controlAllDevices(1)
+  assert.equal(system.sendingAll, true)
+  await controlAllDevices(0)
+  await toggleDevice(devices[1])
+  assert.deepEqual(posted, [{ deviceId: 1, status: 1 }, { deviceId: 2, status: 1 }])
+  release()
+  await request
+  assert.match(system.controlError, /LED 2: MQTT offline/)
+  assert.equal(system.devices[0].status, 0, 'wait for physical ACK')
+  assert.equal(system.devices[0].pending, true)
+  assert.equal(system.sendingAll, false)
+  assert.deepEqual(system.sending, {})
+  await controlAllDevices(0)
+  assert.equal(posted.length, 2, 'pending command blocks bulk control')
+
+  devices[0].pending = false
+  globalThis.fetch = async (url, options) => {
+    if (url === '/api/devices') return ok(devices)
+    posted.push(JSON.parse(options.body))
+    return ok('OK')
+  }
+  await controlAllDevices(0)
+  assert.deepEqual(posted.at(-1), { deviceId: 4, status: 0 })
+  system.devices = []
+})
 
 test('API sends session token and clears it after unauthorized response', async () => {
   let headers
@@ -36,9 +83,11 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
   globalThis.window = { location: { origin: 'http://localhost:5173' } }
   assert.equal(websocketUrl(), 'ws://localhost:5173/ws')
   const instances = []
+  setAccessToken('websocket-session-token')
   globalThis.WebSocket = class {
-    constructor() { instances.push(this) }
-    close() { this.onclose?.() }
+    constructor(url) { this.url = url; instances.push(this) }
+    send(message) { this.sent = JSON.parse(message) }
+    close(code = 1000) { this.onclose?.({ code }) }
     event(topic, data) { this.onmessage({ data: JSON.stringify({ topic, data }) }) }
   }
   let status = 0, pending = false, posted
@@ -54,6 +103,10 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
     await tick()
     const ws = instances[0]
     ws.onopen()
+    assert.deepEqual(ws.sent, { type: 'auth', token: 'websocket-session-token' })
+    assert.equal(ws.url, 'ws://localhost:5173/ws', 'token must not appear in URL')
+    assert.equal(system.realtime, false, 'wait for server authentication acknowledgment')
+    ws.onmessage({ data: JSON.stringify({ type: 'authenticated' }) })
     await tick()
     assert.equal(system.backendOnline, true)
     assert.equal(system.sensors.temperature.value, 25)
@@ -76,7 +129,23 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
     await new Promise(resolve => setTimeout(resolve, 3100))
     assert.equal(instances.length, 2)
     instances[1].onopen()
+    assert.deepEqual(instances[1].sent, { type: 'auth', token: 'websocket-session-token' })
+    instances[1].onmessage({ data: JSON.stringify({ type: 'authenticated' }) })
     await tick()
     assert.equal(system.sensors.temperature.value, 30, 'older REST snapshot must not replace newer sensor event')
-  } finally { stopSystem() }
+    let expiredEvent
+    const originalDispatch = globalThis.dispatchEvent
+    globalThis.dispatchEvent = event => { expiredEvent = event.type }
+    try {
+      instances[1].close(4401)
+      assert.equal(system.realtime, false)
+      assert.equal(expiredEvent, 'auth-expired')
+      let headers
+      globalThis.fetch = async (url, options) => { headers = options.headers; return ok('OK') }
+      await api('/api/auth/health')
+      assert.equal(headers.Authorization, undefined)
+    } finally {
+      globalThis.dispatchEvent = originalDispatch
+    }
+  } finally { stopSystem(); setAccessToken('') }
 })

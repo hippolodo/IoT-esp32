@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { api, websocketUrl } from './api.js'
+import { api, websocketUrl, getAccessToken, expireSession } from './api.js'
 
 const SYSTEM_REFRESH_MS = 5000
 const WEBSOCKET_RETRY_MS = 3000
@@ -18,6 +18,7 @@ export const system = reactive({
   sensorError: '',
   controlError: '',
   sending: {},
+  sendingAll: false,
 })
 const listeners = new Set()
 let socket,
@@ -80,16 +81,23 @@ export async function refreshSystem() {
 
 function connect() {
   if (!running) return
-  socket = new WebSocket(websocketUrl())
-  socket.onopen = () => {
-    system.realtime = true
-    refreshSystem()
+  const connection = new WebSocket(websocketUrl())
+  socket = connection
+  connection.onopen = () => {
+    if (!running || socket !== connection) return
+    connection.send(JSON.stringify({ type: 'auth', token: getAccessToken() }))
   }
-  socket.onmessage = ({ data }) => {
+  connection.onmessage = ({ data }) => {
+    if (!running || socket !== connection) return
     let event
     try {
       event = JSON.parse(data)
     } catch {
+      return
+    }
+    if (event.type === 'authenticated') {
+      system.realtime = true
+      refreshSystem()
       return
     }
     eventRevision++
@@ -113,11 +121,16 @@ function connect() {
     }
     listeners.forEach((listener) => listener(event))
   }
-  socket.onclose = () => {
+  connection.onclose = ({ code } = {}) => {
+    if (socket !== connection) return
     system.realtime = false
+    if (running && code === 4401) {
+      expireSession()
+      return
+    }
     if (running) retry = setTimeout(connect, WEBSOCKET_RETRY_MS)
   }
-  socket.onerror = () => socket.close()
+  connection.onerror = () => connection.close()
 }
 
 export function startSystem() {
@@ -132,11 +145,12 @@ export function stopSystem() {
   running = false
   clearTimeout(retry)
   clearInterval(poll)
+  system.realtime = false
   socket?.close()
 }
 
 export async function toggleDevice(device) {
-  if (system.sending[device.id] || device.pending) return
+  if (system.sendingAll || system.sending[device.id] || device.pending) return
   system.sending[device.id] = true
   system.controlError = ''
   try {
@@ -152,5 +166,45 @@ export async function toggleDevice(device) {
     system.controlError = error.message
   } finally {
     delete system.sending[device.id]
+  }
+}
+
+export async function controlAllDevices(status) {
+  const devices = system.devices.filter((device) => device.id !== 3 && device.controllable)
+  if (
+    ![0, 1].includes(status) ||
+    system.sendingAll ||
+    !system.backendOnline ||
+    !system.mqttConnected ||
+    system.esp32Online !== true ||
+    devices.some((device) => device.pending || system.sending[device.id])
+  ) return
+
+  const targets = devices.filter((device) => device.status !== status)
+  if (!targets.length) return
+  system.sendingAll = true
+  system.controlError = ''
+  targets.forEach((device) => { system.sending[device.id] = true })
+  try {
+    const results = await Promise.allSettled(targets.map(async (device) => {
+      await api('/api/devices/control', {
+        method: 'POST',
+        body: JSON.stringify({ deviceId: device.id, status }),
+      })
+    }))
+    const errors = results.flatMap((result, index) =>
+      result.status === 'rejected'
+        ? [`${targets[index].name}: ${result.reason.message}`]
+        : [],
+    )
+    if (errors.length) system.controlError = errors.join('; ')
+    // Refresh pending/confirmed states; do not assume HTTP success means the LED changed.
+    await refreshDevices()
+    listeners.forEach((listener) => listener({ topic: '/topic/device-status', data: {} }))
+  } catch (error) {
+    system.controlError = [system.controlError, error.message].filter(Boolean).join('; ')
+  } finally {
+    targets.forEach((device) => { delete system.sending[device.id] })
+    system.sendingAll = false
   }
 }

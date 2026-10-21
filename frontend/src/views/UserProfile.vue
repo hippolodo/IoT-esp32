@@ -197,7 +197,7 @@
                 </div>
                 <input
                   type="text"
-                  value="https://www.figma.com/design/ldQydGxj6oVYl7TOKpCjx7/IOT?node-id=0-1&t=gkSAMCVuBALT2IE8-0"
+                  value="http://127.0.0.1:8088/docs"
                   readonly
                   class="w-full pl-9 pr-4 py-2.5 text-sm text-gray-500 bg-gray-50 border border-gray-200 rounded-lg outline-none"
                 />
@@ -205,7 +205,7 @@
               <button
                 class="px-4 py-2.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg transition-colors flex items-center shrink-0"
               >
-                PostMan
+                Swagger
               </button>
             </div>
           </div>

@@ -53,8 +53,10 @@ nút **Chưa có tài khoản? Đăng ký** trên FE hoặc `POST /api/auth/regi
 Tài khoản mới dùng PBKDF2-SHA256 (600.000 vòng, salt ngẫu nhiên); đăng nhập vẫn
 đọc SHA-256 để tương thích tài khoản Java/seed cũ. Đăng nhập trả `accessToken` có hiệu lực 24 giờ;
 frontend giữ token trong `sessionStorage` và gửi header `Authorization: Bearer <accessToken>`.
-Điều khiển thiết bị và xem hồ sơ yêu cầu token hợp lệ; hồ sơ trả đúng người đăng nhập,
-không trả `passwordHash`. Đăng xuất thu hồi token phía backend.
+Tất cả REST API nghiệp vụ yêu cầu token hợp lệ, gồm cả GET thiết bị, cảm biến,
+lịch sử và trạng thái hệ thống. Chỉ `/api/auth/health`, `/api/auth/register` và
+`/api/auth/login` công khai. Hồ sơ trả đúng người đăng nhập, không trả `passwordHash`.
+Đăng xuất thu hồi token phía backend.
 Backend lấy người thực hiện từ phiên đăng nhập, không nhận `userId` do FE tự khai báo.
 API lịch sử trả thêm `userId`; các bản ghi cũ trả null.
 
@@ -84,7 +86,7 @@ trùng và tạo tài khoản tuần tự, phù hợp cấu hình một worker �
 
 Trong Swagger (`/docs`), gọi `/api/auth/login`, sao chép `data.accessToken`,
 bấm **Authorize** và dán token (không thêm chữ `Bearer`). Swagger sẽ gửi token
-khi gọi API điều khiển, hồ sơ và đăng xuất. Sau khi đăng xuất, bấm Authorize → Logout
+khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, bấm Authorize → Logout
 để xóa token khỏi Swagger.
 
 ## REST API giữ nguyên
@@ -171,14 +173,24 @@ status coi mạch offline; dữ liệu đo hợp lệ mới sẽ cập nhật tr
 
 ```js
 const ws = new WebSocket('ws://localhost:8088/ws')
+ws.onopen = () => ws.send(JSON.stringify({
+  type: 'auth', token: sessionStorage.getItem('accessToken'),
+}))
 ws.onmessage = ({ data }) => {
   const event = JSON.parse(data)
+  if (event.type === 'authenticated') return // Đã xác thực, bắt đầu nhận sự kiện.
   if (event.topic === '/topic/sensors') console.log(event.data)
   if (event.topic === '/topic/device-status') console.log(event.data)
 }
 ```
 
-Có thể lọc một kênh bằng `/ws?topic=/topic/sensors`.
+Trong trình duyệt, bản tin đầu tiên trong 5 giây phải là `{type: "auth", token: "..."}`.
+Backend chỉ đăng ký nhận sự kiện sau khi xác thực và trả `{type: "authenticated"}`.
+Client ngoài trình duyệt có thể dùng header `Authorization: Bearer <token>` thay thế.
+Không đưa token vào URL. Sai/thiếu/hết hạn token bị đóng với code `4401`.
+Phiên được kiểm tra trước mỗi sự kiện và mỗi 5 giây khi không có sự kiện; đăng xuất
+hoặc hết hạn sẽ ngắt kết nối, FE xóa token và quay về đăng nhập. Kiểm tra Origin vẫn áp dụng.
+Có thể lọc một kênh bằng `/ws?topic=/topic/sensors` sau khi xác thực.
 
 ```json
 {"topic":"/topic/sensors","data":{"temperature":28.5,"humidity":65,"light":1500}}

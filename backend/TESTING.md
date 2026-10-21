@@ -10,18 +10,21 @@ Chạy tại thư mục backend:
 Test dùng database SQLite tạm riêng cho từng test, không truy cập MySQL hay broker
 thật. MQTT publish được giả lập; xử lý bản tin dùng chính service của ứng dụng.
 
-Phạm vi: 12 REST endpoint, login SHA-256, profile, định dạng envelope/camelCase,
+Phạm vi: 15 REST endpoint, đăng ký/PBKDF2 và login SHA-256 tương thích, profile, định dạng envelope/camelCase,
 phân trang, lọc thời gian bao gồm đơn vị cuối, dữ liệu DHT lỗi, ACK cập nhật cùng một
 history, retained snapshot, publish lỗi, timeout, LED chưa map, đăng ký lại topic
 khi reconnect, WebSocket event/filter và seed không ghi đè dữ liệu hiện có.
+Các API GET dữ liệu được kiểm tra với token thiếu, giả, hết hạn và đã đăng xuất.
+WebSocket kiểm tra xác thực bản tin đầu tiên/header, từ chối trước khi subscribe,
+và đóng phiên đã hết hạn/thu hồi ngay cả khi không có sự kiện mới.
 
 Kiểm tra thủ công với MySQL/Mosquitto/ESP32:
 
 1. Cấu hình `.env`, khởi động MySQL và broker rồi chạy uvicorn theo README.
-2. Kiểm tra `/docs`, `/api/devices`, `/api/sensors`. Đối chiếu MQTT_DEVICE_MAP với
+2. Đăng nhập trong `/docs`, dán token vào Authorize rồi kiểm tra `/api/devices`, `/api/sensors`. Đối chiếu MQTT_DEVICE_MAP với
    ID thật trong database và LED1/LED2 của mạch.
 3. Nạp firmware, kiểm tra có dữ liệu mới qua `/api/sensors/latest` và `/api/sensors/data`.
-4. Mở WebSocket `/ws`, gửi POST `/api/devices/control`; kiểm tra đèn vật lý,
+4. Mở WebSocket `/ws` và gửi bản tin xác thực theo README, gửi POST `/api/devices/control`; kiểm tra đèn vật lý,
    trạng thái thiết bị và đúng một history chuyển từ PENDING sang SUCCESS.
 5. Ngắt mạch và gửi lệnh: history phải FAILED sau timeout. Ngắt broker: POST trả 503.
 6. Khởi động broker lại: xác nhận service tự kết nối và nhận dữ liệu mới.

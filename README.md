@@ -12,7 +12,7 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
 | Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
-| Kiểm thử | 45 kiểm thử backend và 3 kiểm thử frontend đã đạt |
+| Kiểm thử | 65 kiểm thử backend và 4 kiểm thử frontend đã đạt |
 | Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
 Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái
@@ -133,7 +133,10 @@ Có thể tạo tài khoản riêng bằng **Chưa có tài khoản? Đăng ký*
 Form yêu cầu tên đăng nhập, họ tên, email, mật khẩu 8–128 ký tự và xác nhận mật khẩu;
 kiểm tra tên/email trùng. Đăng ký thành công sẽ chuyển về đăng nhập với username điền sẵn.
 Đăng nhập cấp token phiên có hiệu lực 24 giờ. Frontend tự gửi token khi gọi API;
-điều khiển thiết bị và xem hồ sơ yêu cầu đăng nhập. Lịch sử điều khiển mới lưu `userId`
+mọi API dữ liệu, trạng thái, điều khiển và hồ sơ đều yêu cầu đăng nhập; chỉ health,
+register và login công khai. WebSocket xác thực token bằng bản tin đầu tiên,
+không đưa token vào URL; phiên bị thu hồi/hết hạn sẽ ngắt kết nối.
+Lịch sử điều khiển mới lưu `userId`
 của người đăng nhập, lịch sử cũ chưa có người thực hiện hiển thị `—`.
 
 ## 3. Chạy frontend

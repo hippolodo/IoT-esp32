@@ -7,6 +7,15 @@ export function setAccessToken(token) {
   else globalThis.sessionStorage?.removeItem('accessToken')
 }
 
+export function getAccessToken() {
+  return accessToken
+}
+
+export function expireSession() {
+  setAccessToken('')
+  globalThis.dispatchEvent?.(new Event('auth-expired'))
+}
+
 export async function api(path, { query, ...options } = {}) {
   const params = new URLSearchParams()
   Object.entries(query || {}).forEach(([key, value]) => {
@@ -24,8 +33,7 @@ export async function api(path, { query, ...options } = {}) {
     })
     const body = await response.json().catch(() => null)
     if (response.status === 401 && accessToken) {
-      setAccessToken('')
-      globalThis.dispatchEvent?.(new Event('auth-expired'))
+      expireSession()
     }
     if (!response.ok || !body?.success) throw new Error(body?.message || `API trả lỗi ${response.status}`)
     return body.data

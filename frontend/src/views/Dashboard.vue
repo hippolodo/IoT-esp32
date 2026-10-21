@@ -82,6 +82,27 @@
         </div>
 
         <p v-if="!lamps.length" class="text-sm text-gray-500">Chưa có thiết bị.</p>
+        <div v-if="lamps.length" class="grid grid-cols-2 gap-3 mb-4" :aria-busy="system.sendingAll">
+          <button
+            type="button"
+            @click="controlAllDevices(1)"
+            :disabled="allControlsDisabled || controllableLamps.every((lamp) => lamp.isOn)"
+            class="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Bật tất cả
+          </button>
+          <button
+            type="button"
+            @click="controlAllDevices(0)"
+            :disabled="allControlsDisabled || controllableLamps.every((lamp) => lamp.status === 0)"
+            class="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Tắt tất cả
+          </button>
+        </div>
+        <p v-if="system.sendingAll" role="status" class="mb-3 text-xs text-blue-600">
+          Đang gửi lệnh đến các đèn…
+        </p>
         <div class="space-y-4">
           <div
             v-for="lamp in lamps"
@@ -113,6 +134,7 @@
                 !system.backendOnline ||
                 !system.mqttConnected ||
                 system.esp32Online !== true ||
+                system.sendingAll ||
                 !lamp.controllable ||
                 lamp.pending ||
                 system.sending[lamp.id]
@@ -154,14 +176,23 @@ import {
 } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import ConnectionStatus from '../components/ConnectionStatus.vue'
-import { system, toggleDevice } from '../services/system'
+import { system, toggleDevice, controlAllDevices } from '../services/system'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 const lamps = computed(() =>
-  system.devices.map((row) => ({
+  system.devices.filter((row) => row.id !== 3).map((row) => ({
     ...row,
     isOn: row.status === 1,
     gpio: row.controlPin != null ? `GPIO ${row.controlPin}` : `GPIO ${row.pinGpio ?? '—'}`,
   })),
+)
+const controllableLamps = computed(() => lamps.value.filter((lamp) => lamp.controllable))
+const allControlsDisabled = computed(() =>
+  !system.backendOnline ||
+  !system.mqttConnected ||
+  system.esp32Online !== true ||
+  system.sendingAll ||
+  !controllableLamps.value.length ||
+  controllableLamps.value.some((lamp) => lamp.pending || system.sending[lamp.id]),
 )
 const latestTime = computed(
   () =>
