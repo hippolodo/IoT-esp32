@@ -1,4 +1,5 @@
 import asyncio
+import calendar
 import hashlib
 import logging
 import re
@@ -25,7 +26,7 @@ from .contracts import (
     parse_date, sensor_dict, time_range,
 )
 from .database import (
-    AuthSession, DataSensor, Device, History, Sensor, User,
+    AuthSession, DataSensor, Device, History, Sensor, User, WindSpeed,
     initialize_database, make_database, now, seed_database,
 )
 from .mqtt import ControlError, EventHub, MqttService
@@ -97,6 +98,7 @@ def create_app(settings=None):
             {"name": "Thiết bị", "description": "Danh sách, trạng thái và điều khiển đèn."},
             {"name": "Cảm biến", "description": "Danh mục, số đo mới nhất và tra cứu dữ liệu cảm biến."},
             {"name": "Lịch sử", "description": "Tra cứu và lọc lịch sử điều khiển thiết bị."},
+            {"name": "Cảnh báo gió", "description": "Đếm đợt vượt 300 m/s theo ngày và tháng, xem chi tiết từng ngày."},
             {"name": "Hệ thống", "description": "Kiểm tra backend và trạng thái kết nối MQTT, ESP32."},
         ],
     )
@@ -162,7 +164,7 @@ def create_app(settings=None):
 
     def device_response(row, db):
         result = device_dict(row)
-        led = settings.device_map.get(row.id)
+        led = settings.device_map.get(row.id) if row.device_type != "WIND_WARNING" else None
         result["controllable"] = led is not None
         result["controlPin"] = {"led1": 2, "led2": 5}.get(led)
         result["pending"] = db.scalars(select(History.id).where(
@@ -256,6 +258,36 @@ def create_app(settings=None):
             raise ControlError("Không tìm thấy thiết bị", 404)
         return envelope(device_response(row, db), "Lấy thông tin thiết bị thành công")
 
+    @app.get("/api/alerts/wind/summary", tags=["Cảnh báo gió"], dependencies=[Depends(current_session)])
+    def wind_summary(month: str, db: Session = Depends(database)):
+        if not re.fullmatch(r"\d{4}-\d{2}", month):
+            raise ValueError("Tháng phải theo YYYY-MM")
+        start = datetime.strptime(month, "%Y-%m")
+        count_days = calendar.monthrange(start.year, start.month)[1]
+        end = start + timedelta(days=count_days)
+        day = func.date(WindSpeed.recorded_at)
+        counts = {str(date): count for date, count in db.execute(
+            select(day, func.count(WindSpeed.id)).where(
+                WindSpeed.recorded_at >= start, WindSpeed.recorded_at < end
+            ).group_by(day)
+        )}
+        days = [{"date": (start + timedelta(days=i)).strftime("%Y-%m-%d"),
+                 "count": counts.get((start + timedelta(days=i)).strftime("%Y-%m-%d"), 0)}
+                for i in range(count_days)]
+        return envelope({"month": month, "threshold": 300, "total": sum(d["count"] for d in days), "days": days})
+
+    @app.get("/api/alerts/wind", tags=["Cảnh báo gió"], dependencies=[Depends(current_session)])
+    def wind_alerts(date: str, page: int = 0, size: int = 10, db: Session = Depends(database)):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            raise ValueError("Ngày phải theo YYYY-MM-DD")
+        start = datetime.strptime(date, "%Y-%m-%d")
+        query = select(WindSpeed).where(
+            WindSpeed.recorded_at >= start, WindSpeed.recorded_at < start + timedelta(days=1)
+        ).order_by(WindSpeed.recorded_at.desc(), WindSpeed.id.desc())
+        return envelope(paginate(db, query, page, size, lambda row: {
+            "id": row.id, "speed": row.speed, "recordedAt": row.recorded_at.strftime("%Y-%m-%d %H:%M:%S")
+        }))
+
     @app.get("/api/sensors", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def sensors(db: Session = Depends(database)):
         return envelope([sensor_dict(s) for s in db.scalars(select(Sensor).order_by(Sensor.id))],
@@ -271,6 +303,30 @@ def create_app(settings=None):
                 rows.append(row)
         rows.sort(key=lambda r: (r.recorded_at or datetime.min, r.id), reverse=True)
         return envelope([data_dict(r) for r in rows], "Lấy dữ liệu cảm biến gần đây thành công")
+
+    @app.get("/api/sensors/chart", tags=["Cảm biến"], dependencies=[Depends(current_session)])
+    def sensor_chart(limit: int = 30, db: Session = Depends(database)):
+        if not 1 <= limit <= 30:
+            raise ValueError("limit phải từ 1 đến 30")
+        keys = {"TEMPERATURE": "temperature", "HUMIDITY": "humidity",
+                "LIGHT": "light", "WIND_SPEED": "windSpeed"}
+        # Match the existing second-precision timestamps, including legacy rows
+        # whose readings from one packet were inserted with different microseconds.
+        recorded = func.substr(cast(DataSensor.recorded_at, String), 1, 19)
+        recent = (select(recorded.label("time")).join(DataSensor.sensor).where(
+            DataSensor.recorded_at.is_not(None), func.upper(Sensor.type).in_(keys)
+        ).group_by(recorded).order_by(recorded.desc()).limit(limit).subquery())
+        rows = db.scalars(select(DataSensor).join(DataSensor.sensor).join(
+            recent, recorded == recent.c.time
+        ).where(func.upper(Sensor.type).in_(keys)).order_by(
+            DataSensor.recorded_at.asc(), DataSensor.id.asc()
+        ))
+        points = {}
+        for row in rows:
+            time = row.recorded_at.strftime("%Y-%m-%d %H:%M:%S")
+            point = points.setdefault(time, {"time": time})
+            point[keys[row.sensor.type.upper()]] = row.value
+        return envelope(list(points.values()), "Lấy lịch sử biểu đồ thành công")
 
     @app.get("/api/sensors/data", tags=["Cảm biến"], dependencies=[Depends(current_session)])
     def sensor_data(sensorId: int | None = None, startTime: str | None = None, endTime: str | None = None,
@@ -322,8 +378,26 @@ def create_app(settings=None):
     @app.get("/api/history", tags=["Lịch sử"], dependencies=[Depends(current_session)])
     def history(deviceId: int | None = None, status: str | None = None, startTime: str | None = None,
                 endTime: str | None = None, page: int = 0, size: int = 10, action: str | None = None,
-                sort: str = "desc", db: Session = Depends(database)):
+                sort: str = "desc", deviceType: str | None = None, db: Session = Depends(database)):
         start, end = time_range(startTime, endTime)
+        if deviceType is not None:
+            if deviceType != "WIND_WARNING" or deviceId is not None:
+                raise ValueError("deviceType phải là WIND_WARNING và không đi kèm deviceId")
+            if sort not in {"asc", "desc"}:
+                raise ValueError("sort phải là asc hoặc desc")
+            if action and action not in {"ON", "OFF", "ALERT"}:
+                raise ValueError("action phải là ON, OFF hoặc ALERT")
+            query = select(WindSpeed)
+            if (status and status != "RECORDED") or (action and action != "ALERT"):
+                query = query.where(False)
+            if start:
+                query = query.where(WindSpeed.recorded_at >= start, WindSpeed.recorded_at < end)
+            query = query.order_by(WindSpeed.recorded_at.asc(), WindSpeed.id.asc()) if sort == "asc" else query.order_by(WindSpeed.recorded_at.desc(), WindSpeed.id.desc())
+            return envelope(paginate(db, query, page, size, lambda row: {
+                "id": row.id, "eventType": "WIND_WARNING", "userId": None, "deviceId": None,
+                "deviceName": "Đèn cảnh báo", "action": "ALERT", "status": "RECORDED",
+                "speed": row.speed, "timestamp": row.recorded_at.strftime("%Y-%m-%d %H:%M:%S"),
+            }), "Lấy lịch sử cảnh báo thành công")
         return envelope(history_page(db, deviceId, status, start, end, page, size, action=action, sort=sort), "Lấy lịch sử thành công")
 
     @app.get("/api/history/filter", tags=["Lịch sử"], dependencies=[Depends(current_session)])

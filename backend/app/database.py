@@ -24,6 +24,7 @@ class Device(Base):
     __tablename__ = "devices"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str | None] = mapped_column(String(255))
+    device_type: Mapped[str] = mapped_column(String(32), default="LIGHT", server_default="LIGHT")
     pin_gpio: Mapped[int | None]
     status: Mapped[int | None]
     updated_at: Mapped[datetime | None] = mapped_column(DateTime)
@@ -60,6 +61,14 @@ class History(Base):
     device: Mapped[Device | None] = relationship(lazy="joined")
 
 
+class WindSpeed(Base):
+    __tablename__ = "WindSpeed"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sensor_id: Mapped[int] = mapped_column(ForeignKey("sensors.id"))
+    speed: Mapped[float] = mapped_column(Float)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -82,7 +91,24 @@ class AuthSession(Base):
 
 
 def initialize_database(engine):
+    tables = inspect(engine).get_table_names()
+    if "wind_alerts" in tables and "windspeed" not in {name.lower() for name in tables}:
+        with engine.begin() as connection:
+            connection.execute(text('ALTER TABLE wind_alerts RENAME TO "WindSpeed"')
+                               if engine.dialect.name == "sqlite"
+                               else text("RENAME TABLE wind_alerts TO `WindSpeed`"))
     Base.metadata.create_all(engine)
+    if "device_type" not in {column["name"] for column in inspect(engine).get_columns("devices")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE devices ADD COLUMN device_type VARCHAR(32) NOT NULL DEFAULT 'LIGHT'"))
+    # Legacy MySQL schemas require a GPIO for every sensor. Simulated sensors
+    # have no physical pin; create_all cannot relax an existing NOT NULL column.
+    gpio_column = next(column for column in inspect(engine).get_columns("sensors")
+                       if column["name"] == "pin_gpio")
+    if not gpio_column["nullable"] and engine.dialect.name in {"mysql", "mariadb"}:
+        gpio_type = gpio_column["type"].compile(dialect=engine.dialect)
+        with engine.begin() as connection:
+            connection.execute(text(f"ALTER TABLE sensors MODIFY COLUMN pin_gpio {gpio_type} NULL"))
     # create_all does not add columns to existing tables. Preserve old history.
     if "user_id" not in {column["name"] for column in inspect(engine).get_columns("histories")}:
         with engine.begin() as connection:
@@ -124,6 +150,20 @@ def seed_database(session_factory):
                 Sensor(name="Cảm biến Độ ẩm", type="HUMIDITY", unit="%", pin_gpio=4, mqtt_key="humidity", module="DHT11"),
                 Sensor(name="Cảm biến Ánh sáng", type="LIGHT", unit="ADC", pin_gpio=33, mqtt_key="light", module="LDR"),
             ])
+        # Add the new sensor to both existing and fresh installations.
+        if not db.scalar(select(Sensor.id).where(Sensor.mqtt_key == "windSpeed")):
+            db.add(Sensor(name="Tốc độ gió", type="WIND_SPEED", unit="m/s",
+                          pin_gpio=None, mqtt_key="windSpeed", module="ESP32 random 0–500"))
+        if not db.scalar(select(Device.id).where(Device.device_type == "WIND_WARNING")):
+            warning = Device(name="Đèn cảnh báo", device_type="WIND_WARNING",
+                             pin_gpio=18, status=0, updated_at=now())
+            wind_sensor = db.scalar(select(Sensor).where(Sensor.mqtt_key == "windSpeed"))
+            latest_wind = db.scalar(select(DataSensor).where(DataSensor.sensor_id == wind_sensor.id)
+                                    .order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc()).limit(1))
+            if latest_wind:
+                warning.status = int(latest_wind.value > 300)
+                warning.updated_at = latest_wind.recorded_at
+            db.add(warning)
         if not db.scalar(select(func.count()).select_from(User)):
             db.add(User(username="admin", password_hash=hashlib.sha256(b"123456").hexdigest(),
                         full_name="Nguyễn Văn A", email="admin@gmail.com", created_at=now()))

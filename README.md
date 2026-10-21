@@ -1,6 +1,16 @@
 # SmartHome IoT — ESP32, MQTT, FastAPI & Vue
 
 Dự án giám sát nhiệt độ, độ ẩm, ánh sáng và điều khiển đèn bằng ESP32.
+
+Bổ sung tốc độ gió giả lập 0–500 m/s trên ESP32, LED tự cảnh báo GPIO18 khi vượt
+300 m/s, bộ lọc WIND_SPEED và thống kê đợt cảnh báo theo tháng/ngày.
+Xem [hướng dẫn tốc độ gió](docs/WIND_SPEED.md) để nối mạch và chạy chức năng mới.
+
+Dashboard tự lấy 30 mốc thời gian gần nhất từ database qua `/api/sensors/chart`
+khi mở/tải lại trang, kể cả khi ESP32 offline (backend và database cần hoạt động).
+Các số đo cùng giây được ghép thành một điểm; dữ liệu realtime tiếp tục cập nhật
+theo thời gian ghi nhận của backend, luôn giữ tối đa 30 điểm.
+
 Firmware viết bằng Arduino/C++, backend dùng Python FastAPI, frontend dùng Vue 3.
 ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu được lưu trong MySQL.
 
@@ -12,7 +22,7 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
 | Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
-| Kiểm thử | 65 kiểm thử backend và 4 kiểm thử frontend đã đạt |
+| Kiểm thử | 94 kiểm thử backend và 7 kiểm thử frontend đã đạt |
 | Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
 Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái
@@ -187,7 +197,7 @@ phải dùng **IP LAN của máy đó**.
 | LED 1 | 2 |
 | LED 2 | 5 |
 
-Giá trị `light` là ADC thô, **chưa phải lux đã hiệu chuẩn**.
+Giá trị `light` là ADC 12-bit đã đảo chiều (`4095 - analogRead(LDRPIN)`): sáng tăng, che giảm; **chưa phải lux đã hiệu chuẩn**. Cần nạp lại firmware để áp dụng; các bản ghi cũ trong database giữ nguyên giá trị trước đây.
 Nếu dùng lại database cũ, đối chiếu metadata GPIO/đơn vị với phần cứng trước khi chạy.
 
 Trong PlatformIO terminal, từ thư mục gốc repository:

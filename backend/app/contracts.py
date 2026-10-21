@@ -13,7 +13,8 @@ def date_string(value):
 
 
 def device_dict(row):
-    return dict(id=row.id, name=row.name, pinGpio=row.pin_gpio, status=row.status, updatedAt=date_string(row.updated_at))
+    return dict(id=row.id, name=row.name, type=row.device_type, pinGpio=row.pin_gpio,
+                status=row.status, updatedAt=date_string(row.updated_at))
 
 
 def sensor_dict(row):

@@ -1,11 +1,11 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api } from '../services/api'
-import { onSystemEvent } from '../services/system'
+import { api } from '../services/api.js'
+import { onSystemEvent } from '../services/system.js'
 
 const PAGE_REFRESH_MS = 10000
 const EVENT_DEBOUNCE_MS = 250
 
-export function usePage(path, query, eventTopic) {
+export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH_MS } = {}) {
   const rows = ref([]),
     currentPage = ref(1),
     itemsPerPage = ref(10)
@@ -62,8 +62,8 @@ export function usePage(path, query, eventTopic) {
   }
   onMounted(() => {
     load()
-    poll = setInterval(load, PAGE_REFRESH_MS)
-    unsubscribe = onSystemEvent((event) => {
+    if (pollIntervalMs > 0) poll = setInterval(load, pollIntervalMs)
+    if (eventTopic) unsubscribe = onSystemEvent((event) => {
       if (event.topic === eventTopic) {
         clearTimeout(timer)
         timer = setTimeout(load, EVENT_DEBOUNCE_MS)

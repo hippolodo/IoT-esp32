@@ -28,6 +28,14 @@ Có thể mở `napmach.ino` bằng Arduino IDE; khi đó cài ESP32 board packa
 ba thư viện trên trong Boards Manager/Library Manager của Arduino IDE.
 Kiểm tra Wi-Fi, IP broker, cổng và tài khoản MQTT trong sketch trước khi nạp.
 
+## Tốc độ gió giả lập và LED cảnh báo
+
+Firmware random 0–500 m/s mỗi 5 giây, gửi thêm `windSpeed` trong JSON cảm biến.
+Nối GPIO18 → điện trở 220–330 Ω → chân dương LED; chân âm LED → GND.
+LED nhấp nháy khi tốc độ gió >300 m/s, tắt khi <=300 m/s, chạy bằng tác vụ riêng.
+LED này không nhận lệnh điều khiển, kể cả lệnh bật/tắt tất cả.
+Xem [hướng dẫn và quy tắc đếm cảnh báo](../docs/WIND_SPEED.md).
+
 ## VS Code báo không tìm thấy Arduino.h / DHT.h
 
 Khi mở cả thư mục IOT, C/C++ cần cấu hình includePath tại `.vscode` của thư mục

@@ -10,12 +10,13 @@ import paho.mqtt.client as mqtt
 from sqlalchemy import or_, select
 
 from .contracts import date_string
-from .database import DataSensor, Device, History, Sensor, now
+from .database import DataSensor, Device, History, Sensor, WindSpeed, now
 
 log = logging.getLogger(__name__)
 ESP32_OFFLINE_TIMEOUT_SECONDS = 20
 MQTT_KEEPALIVE_SECONDS = 15
-SENSOR_KEYS = ("temperature", "humidity", "light")
+SENSOR_KEYS = ("temperature", "humidity", "light", "windSpeed")
+WIND_ALERT_THRESHOLD = 300
 
 
 class ControlError(Exception):
@@ -29,9 +30,12 @@ class EventHub:
         self.loop = None
         self.subscribers = set()
 
-    def emit(self, topic, data):
+    def emit(self, topic, data, recorded_at=None):
         if self.loop and not self.loop.is_closed():
-            self.loop.call_soon_threadsafe(self._enqueue, {"topic": topic, "data": data})
+            event = {"topic": topic, "data": data}
+            if recorded_at is not None:
+                event["recordedAt"] = recorded_at
+            self.loop.call_soon_threadsafe(self._enqueue, event)
 
     def _enqueue(self, event):
         for queue in tuple(self.subscribers):
@@ -112,22 +116,45 @@ class MqttService:
         if not isinstance(values, dict):
             raise ValueError("Sensor payload must be a JSON object")
         clean = {}
+        recorded_at = now()
+        new_alert = None
         with self.sessions.begin() as db:
             for key in SENSOR_KEYS:
                 value = values.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                     continue
+                if key == "windSpeed" and not 0 <= value <= 500:
+                    continue
                 sensor = db.scalars(select(Sensor).where(or_(
                     Sensor.mqtt_key == key, Sensor.type == key.upper()))).first()
                 if sensor:
-                    db.add(DataSensor(sensor_id=sensor.id, value=float(value), recorded_at=now()))
+                    if key == "windSpeed":
+                        warning_device = db.scalar(select(Device).where(Device.device_type == "WIND_WARNING"))
+                        if warning_device is not None:
+                            warning_device.status = int(value > WIND_ALERT_THRESHOLD)
+                            warning_device.updated_at = recorded_at
+                        # Read persisted state before inserting, so backend restarts
+                        # do not count the same continuous high-wind episode twice.
+                        previous = db.scalars(select(DataSensor).where(
+                            DataSensor.sensor_id == sensor.id
+                        ).order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc()).limit(1)).first()
+                        if value > WIND_ALERT_THRESHOLD and (previous is None or previous.value <= WIND_ALERT_THRESHOLD):
+                            new_alert = WindSpeed(sensor_id=sensor.id, speed=float(value), recorded_at=recorded_at)
+                            db.add(new_alert)
+                    db.add(DataSensor(sensor_id=sensor.id, value=float(value), recorded_at=recorded_at))
                 clean[key] = value
         if isinstance(values.get("error"), str):
             clean["error"] = values["error"]
         if clean:
             self.esp_online = True
             self.last_seen = monotonic()
-            self.hub.emit("/topic/sensors", clean)
+            self.hub.emit("/topic/sensors", clean, recorded_at=date_string(recorded_at))
+        # Notify statistics only after the new alert has been committed.
+        if new_alert is not None:
+            self.hub.emit("/topic/wind-alerts", {
+                "id": new_alert.id, "speed": new_alert.speed,
+                "recordedAt": date_string(new_alert.recorded_at),
+            })
 
     def _device_status(self, device_id, payload, retained):
         if payload not in {"ON", "OFF", "FAIL"}:
@@ -135,7 +162,7 @@ class MqttService:
         self.expire_pending()
         with self.sessions.begin() as db:
             device = db.get(Device, device_id)
-            if device is None:
+            if device is None or device.device_type == "WIND_WARNING":
                 return
             if payload != "FAIL":
                 device.status = int(payload == "ON")
@@ -154,8 +181,11 @@ class MqttService:
         with self.lock:
             self.expire_pending()
             with self.sessions.begin() as db:
-                if db.get(Device, device_id) is None:
+                device = db.get(Device, device_id)
+                if device is None:
                     raise ControlError("Không tìm thấy thiết bị", 404)
+                if device.device_type == "WIND_WARNING":
+                    raise ControlError("Đèn cảnh báo hoạt động tự động, không nhận lệnh bật/tắt", 400)
                 led = self.settings.device_map.get(device_id)
                 if led is None:
                     raise ControlError("Thiết bị chưa được ánh xạ trong MQTT_DEVICE_MAP", 400)

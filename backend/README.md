@@ -104,10 +104,23 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | POST | `/api/devices/control` | `{"deviceId":1,"status":1}` (0=OFF, 1=ON) |
 | GET | `/api/sensors` | |
 | GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
+| GET | `/api/sensors/chart` | `limit` mặc định 30, từ 1–30; ghép các cảm biến theo mốc giây, trả từ cũ đến mới, hoạt động cả khi ESP32 offline |
 | GET | `/api/sensors/data` | `sensorId,startTime,endTime,page,size` tùy chọn |
 | GET | `/api/sensors/filter` | Bắt buộc `type,startDate,endDate`; `page,size` tùy chọn |
 | GET | `/api/history` | `deviceId,status,startTime,endTime,page,size` tùy chọn |
 | GET | `/api/history/filter` | Bắt buộc `deviceId,status`; thời gian/phân trang tùy chọn |
+| GET | `/api/alerts/wind/summary` | Bắt buộc `month=YYYY-MM`; trả tổng tháng và số đợt cảnh báo từng ngày |
+| GET | `/api/alerts/wind` | Bắt buộc `date=YYYY-MM-DD`; `page,size` tùy chọn; chi tiết các đợt cảnh báo trong ngày |
+
+Tốc độ gió giả lập từ ESP32 có `sensorType=WIND_SPEED`, MQTT key `windSpeed`,
+đơn vị `m/s`, khoảng 0–500. Dùng `/api/sensors/data?sensorType=WIND_SPEED` để lọc.
+Backend lưu cảnh báo khi bắt đầu đợt vượt 300 m/s (không đếm mỗi lần LED nháy).
+Xem [hướng dẫn tốc độ gió và cảnh báo](../docs/WIND_SPEED.md).
+
+Action History có bộ lọc **Đèn cảnh báo**, gọi `/api/history?deviceType=WIND_WARNING`.
+API đọc các đợt cảnh báo từ `WindSpeed`, hỗ trợ thời gian, phân trang và `sort`.
+Mỗi dòng có `action=ALERT`, `status=RECORDED` (đã ghi nhận), `userId=null`
+và tốc độ gió. Đây là cảnh báo tự động, không phải phản hồi xác nhận bật/tắt đèn.
 
 Response vẫn có `success,message,data,code`. Thuộc tính camelCase, chuỗi thời gian
 DTO `yyyy-MM-dd HH:mm:ss`, phân trang có `content,totalElements,totalPages,number,size,
@@ -193,7 +206,7 @@ hoặc hết hạn sẽ ngắt kết nối, FE xóa token và quay về đăng n
 Có thể lọc một kênh bằng `/ws?topic=/topic/sensors` sau khi xác thực.
 
 ```json
-{"topic":"/topic/sensors","data":{"temperature":28.5,"humidity":65,"light":1500}}
+{"topic":"/topic/sensors","recordedAt":"2026-10-21 12:00:00","data":{"temperature":28.5,"humidity":65,"light":1500,"windSpeed":350}}
 ```
 
 ```json

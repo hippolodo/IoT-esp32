@@ -16,8 +16,19 @@
     <p v-if="system.controlError" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
       {{ system.controlError }}
     </p>
-    <p class="mb-3 text-xs text-gray-500">Giá trị gần nhất · {{ latestTime }}. Ánh sáng là ADC thô.</p>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+    <p class="mb-3 text-xs text-gray-500">Giá trị gần nhất · {{ latestTime }}. Ánh sáng là ADC đảo chiều: sáng tăng, che giảm.</p>
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
+      <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+        <div class="flex justify-between items-center mb-4">
+          <span class="text-xs font-bold text-gray-400">TỐC ĐỘ GIÓ (GIẢ LẬP)</span>
+          <i class="fa-solid fa-wind text-cyan-600" aria-hidden="true"></i>
+        </div>
+        <p><span class="text-4xl font-bold">{{ system.sensors.windSpeed?.value ?? '—' }}</span> m/s</p>
+        <p class="mt-2 text-xs" :class="system.sensors.windSpeed?.value > 300 ? 'text-red-600' : 'text-gray-500'">
+          {{ system.sensors.windSpeed?.value > 300 ? 'Vượt 300 m/s · LED cảnh báo nhấp nháy' : 'LED tự cảnh báo khi vượt 300 m/s' }}
+        </p>
+        <p v-if="system.esp32Online !== true" class="mt-1 text-xs text-amber-700">Giá trị ghi nhận gần nhất</p>
+      </div>
       <div
         class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-md transition-shadow"
       >
@@ -67,9 +78,12 @@
       <div class="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <div class="flex items-center mb-6">
           <i class="fa-solid fa-chart-line text-blue-500 mr-2 text-lg"></i>
-          <h3 class="text-lg font-bold">Biểu Đồ Cảm Biến Realtime</h3>
+          <h3 class="text-lg font-bold">Biểu Đồ Cảm Biến · 30 điểm gần nhất</h3>
         </div>
 
+        <p v-if="system.chartLoading" role="status" class="mb-3 text-sm text-gray-500">Đang tải lịch sử biểu đồ…</p>
+        <p v-if="system.chartError" role="alert" class="mb-3 text-sm text-red-600">Không tải được lịch sử: {{ system.chartError }}</p>
+        <p v-if="!system.chartLoading && !system.chartError && !system.points.length" class="mb-3 text-sm text-gray-500">Chưa có dữ liệu cảm biến trong database.</p>
         <div class="h-96 w-full relative">
           <Line :data="chartData" :options="chartOptions" />
         </div>
@@ -156,6 +170,24 @@
               ></span>
             </button>
           </div>
+          <div class="flex items-center justify-between gap-3 p-4 rounded-xl border border-gray-100 bg-gray-50/50">
+            <div class="flex items-center space-x-3">
+              <div :class="[
+                'w-10 h-10 shrink-0 rounded-full flex items-center justify-center',
+                warningLamp.active && warningLamp.online ? 'wind-warning-blink' : 'bg-gray-100 text-gray-400',
+              ]">
+                <i class="fa-regular fa-lightbulb text-lg" aria-hidden="true"></i>
+              </div>
+              <div>
+                <p class="text-sm font-bold">{{ warningLamp.name }}</p>
+                <p class="text-xs text-gray-500">GPIO{{ warningLamp.gpio }} · Tự động khi gió &gt;300 m/s</p>
+                <p role="status" :class="['mt-1 text-xs', warningLamp.active && warningLamp.online ? 'text-red-600' : 'text-gray-500']">
+                  {{ warningLamp.label }}
+                </p>
+              </div>
+            </div>
+            <span class="shrink-0 rounded-full bg-amber-50 px-2 py-1 text-xs font-medium text-amber-700">Tự động</span>
+          </div>
         </div>
       </div>
     </div>
@@ -179,13 +211,29 @@ import ConnectionStatus from '../components/ConnectionStatus.vue'
 import { system, toggleDevice, controlAllDevices } from '../services/system'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 const lamps = computed(() =>
-  system.devices.filter((row) => row.id !== 3).map((row) => ({
+  system.devices.filter((row) => row.type !== 'WIND_WARNING').map((row) => ({
     ...row,
     isOn: row.status === 1,
     gpio: row.controlPin != null ? `GPIO ${row.controlPin}` : `GPIO ${row.pinGpio ?? '—'}`,
   })),
 )
 const controllableLamps = computed(() => lamps.value.filter((lamp) => lamp.controllable))
+const warningLamp = computed(() => {
+  const device = system.devices.find((row) => row.type === 'WIND_WARNING')
+  const speed = system.sensors.windSpeed?.value
+  const known = typeof speed === 'number' && Number.isFinite(speed)
+  const active = known && speed > 300
+  const online = system.backendOnline && system.mqttConnected && system.esp32Online === true
+  return {
+    name: device?.name || 'Đèn cảnh báo',
+    gpio: device?.pinGpio ?? 18,
+    active,
+    online,
+    label: !known ? 'Chưa có dữ liệu tốc độ gió'
+      : !online ? `Ghi nhận cuối: ${active ? 'Cảnh báo' : 'Không cảnh báo'} · Mất kết nối`
+      : active ? 'Đang cảnh báo · Nhấp nháy' : 'Bình thường · Đèn tắt',
+  }
+})
 const allControlsDisabled = computed(() =>
   !system.backendOnline ||
   !system.mqttConnected ||
@@ -207,6 +255,7 @@ const chartData = computed(() => ({
     { key: 'temperature', label: 'Nhiệt độ (°C)', borderColor: '#ef4444', yAxisID: 'y' },
     { key: 'humidity', label: 'Độ ẩm (%)', borderColor: '#3b82f6', yAxisID: 'y' },
     { key: 'light', label: 'Ánh sáng (ADC)', borderColor: '#f59e0b', yAxisID: 'y2' },
+    { key: 'windSpeed', label: 'Tốc độ gió (m/s)', borderColor: '#10b981', yAxisID: 'y2' },
   ].map(({ key, ...style }) => ({
     ...style,
     data: system.points.map((row) => row[key] ?? null),
@@ -249,10 +298,27 @@ const chartOptions = ref({
       display: true,
       position: 'right',
       min: 0,
-      max: 3000,
-      title: { display: true, text: 'Ánh sáng (ADC)' },
+      max: 5000,
+      title: { display: true, text: 'Ánh sáng (ADC) / Tốc độ gió (m/s)' },
       grid: { display: false },
     },
   },
 })
 </script>
+
+<style scoped>
+.wind-warning-blink {
+  animation: wind-warning-blink 2000ms steps(1, end) infinite;
+}
+
+@keyframes wind-warning-blink {
+  0%, 100% {
+    background-color: #fee2e2;
+    color: #dc2626;
+  }
+  50% {
+    background-color: #f3f4f6;
+    color: #9ca3af;
+  }
+}
+</style>

@@ -7,9 +7,9 @@
 // ==========================================
 // 1. CẤU HÌNH WIFI HOTSPOT & MOSQUITTO BROKER
 // ==========================================
-const char* ssid = "Phan Han(Tang 3)";           // Tên Wi-Fi phát từ Laptop
-const char* password = "68686868"; // Mật khẩu Wi-Fi
-const char* mqtt_server = "192.168.1.82"; // IP của Laptop (Broker)
+const char* ssid = "Hi";           // Tên Wi-Fi phát từ Laptop
+const char* password = "27112005"; // Mật khẩu Wi-Fi
+const char* mqtt_server = "172.20.10.4"; // IP của Laptop (Broker)
 const int mqtt_port = 1884;
 
 const char* mqtt_user = "B23DCCN294";
@@ -26,6 +26,7 @@ const char* status_topic = "esp32/status";
 
 #define LED1_PIN 2
 #define LED2_PIN 5
+#define WIND_WARNING_LED_PIN 18 // LED riêng, chỉ cảnh báo tự động, không nhận lệnh MQTT.
 
 DHT dht(DHTPIN, DHTTYPE);
 WiFiClient espClient;
@@ -33,9 +34,43 @@ PubSubClient client(espClient);
 
 unsigned long lastMsg = 0;
 unsigned long lastReconnectAttempt = 0;
-const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 2000;
+const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 5000;
 const unsigned long MQTT_RECONNECT_INTERVAL_MS = 2000;
 const unsigned long LED_SETTLE_MS = 10;
+const uint8_t LIGHT_ADC_BITS = 12;
+const int LIGHT_ADC_MAX = (1 << LIGHT_ADC_BITS) - 1;
+const int WIND_WARNING_THRESHOLD = 300;
+const unsigned long WIND_BLINK_INTERVAL_MS = 1000;
+unsigned long lastWindSample = 0;
+unsigned long lastWindBlink = 0;
+volatile int windSpeed = 0;
+bool windLedOn = false;
+
+void updateWindWarning() {
+  const unsigned long current = millis();
+  if (current - lastWindSample >= SENSOR_PUBLISH_INTERVAL_MS) {
+    lastWindSample = current;
+    windSpeed = random(0, 501); // 0..500 m/s, giả lập ngay trên ESP32.
+  }
+  if (windSpeed > WIND_WARNING_THRESHOLD) {
+    if (current - lastWindBlink >= WIND_BLINK_INTERVAL_MS) {
+      lastWindBlink = current;
+      windLedOn = !windLedOn;
+      digitalWrite(WIND_WARNING_LED_PIN, windLedOn ? HIGH : LOW);
+    }
+  } else {
+    windLedOn = false;
+    digitalWrite(WIND_WARNING_LED_PIN, LOW);
+  }
+}
+
+// Chạy riêng để LED vẫn nháy ngay cả lúc kết nối Wi-Fi/MQTT đang chờ.
+void windWarningTask(void* parameter) {
+  for (;;) {
+    updateWindWarning();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
 
 // ==========================================
 // 3. HÀM KẾT NỐI WIFI
@@ -131,7 +166,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 bool reconnect() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[LOI HE THONG] Wi-Fi bi ngat! Dang ket noi lai...");
-    setup_wifi();
+    WiFi.reconnect();
     return false;
   }
 
@@ -183,10 +218,15 @@ void setup() {
 
   pinMode(LED1_PIN, OUTPUT);
   pinMode(LED2_PIN, OUTPUT);
+  pinMode(WIND_WARNING_LED_PIN, OUTPUT);
+  digitalWrite(WIND_WARNING_LED_PIN, LOW);
+  randomSeed(esp_random());
+  xTaskCreate(windWarningTask, "wind-warning", 2048, nullptr, 1, nullptr);
   digitalWrite(LED1_PIN, LOW);
   digitalWrite(LED2_PIN, LOW);
 
   pinMode(LDRPIN, INPUT);
+  analogReadResolution(LIGHT_ADC_BITS);
   pinMode(DHTPIN, INPUT_PULLUP);
 
   dht.begin();
@@ -196,6 +236,7 @@ void setup() {
   client.setCallback(callback);
   client.setKeepAlive(15);
   client.setBufferSize(512);
+  client.setSocketTimeout(1);
 }
 
 // ==========================================
@@ -218,7 +259,8 @@ void loop() {
   if (now - lastMsg > SENSOR_PUBLISH_INTERVAL_MS) {
     lastMsg = now;
 
-    int anh_sang = analogRead(LDRPIN);
+    // Module LDR có ADC giảm khi sáng: đảo về chiều sáng tăng, che giảm.
+    int anh_sang = LIGHT_ADC_MAX - analogRead(LDRPIN);
     float do_am = dht.readHumidity();
     float nhiet_do = dht.readTemperature();
 
@@ -231,6 +273,8 @@ void loop() {
                 ", \"humidity\":" + String(do_am, 1) + "}";
     }
 
+    payload.remove(payload.length() - 1);
+    payload += ", \"windSpeed\":" + String(windSpeed) + "}";
     Serial.println(payload);
 
     if (client.connected()) {

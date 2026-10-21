@@ -4,7 +4,7 @@ import { api, websocketUrl, getAccessToken, expireSession } from './api.js'
 const SYSTEM_REFRESH_MS = 5000
 const WEBSOCKET_RETRY_MS = 3000
 const MAX_CHART_POINTS = 30
-const SENSOR_KEYS = ['temperature', 'humidity', 'light']
+const SENSOR_KEYS = ['temperature', 'humidity', 'light', 'windSpeed']
 
 export const system = reactive({
   backendOnline: false,
@@ -14,6 +14,8 @@ export const system = reactive({
   devices: [],
   sensors: {},
   points: [],
+  chartLoading: false,
+  chartError: '',
   error: '',
   sensorError: '',
   controlError: '',
@@ -28,6 +30,46 @@ let socket,
   refreshing = false
 let eventRevision = 0,
   deviceSequence = 0
+let chartController,
+  chartSequence = 0,
+  chartHistoryLoaded = false
+
+function mergeChartPoints(...groups) {
+  const points = new Map()
+  for (const row of groups.flat()) {
+    if (typeof row.time !== 'string') continue
+    const time = row.time.slice(0, 19)
+    const point = { ...points.get(time), time }
+    for (const key of SENSOR_KEYS) {
+      if (typeof row[key] === 'number' && Number.isFinite(row[key])) point[key] = row[key]
+    }
+    if (SENSOR_KEYS.some((key) => key in point)) points.set(time, point)
+  }
+  return [...points.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-MAX_CHART_POINTS)
+}
+
+export async function refreshChartHistory() {
+  chartController?.abort()
+  const request = new AbortController()
+  chartController = request
+  const sequence = ++chartSequence
+  system.chartLoading = true
+  system.chartError = ''
+  try {
+    const history = await api('/api/sensors/chart', {
+      query: { limit: MAX_CHART_POINTS },
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(10000)]),
+    })
+    if (!running || sequence !== chartSequence) return
+    // Keep realtime readings received while the database request was in flight.
+    system.points = mergeChartPoints(history, system.points)
+    chartHistoryLoaded = true
+  } catch (error) {
+    if (running && sequence === chartSequence && error.name !== 'AbortError') system.chartError = error.message
+  } finally {
+    if (sequence === chartSequence) system.chartLoading = false
+  }
+}
 
 export function onSystemEvent(listener) {
   listeners.add(listener)
@@ -65,7 +107,9 @@ export async function refreshSystem() {
     if (!running) return
     Object.assign(system, { backendOnline: true, error: '' })
     if (revision === eventRevision) Object.assign(system, status)
-    latest.forEach((row) => sensorValues({ [row.sensorType.toLowerCase()]: row.value }, row.recordedAt))
+    latest.forEach((row) => sensorValues({
+      [row.sensorType === 'WIND_SPEED' ? 'windSpeed' : row.sensorType.toLowerCase()]: row.value,
+    }, row.recordedAt))
   } catch (error) {
     if (running)
       Object.assign(system, {
@@ -98,16 +142,22 @@ function connect() {
     if (event.type === 'authenticated') {
       system.realtime = true
       refreshSystem()
+      if (!system.chartLoading) refreshChartHistory()
       return
     }
     eventRevision++
     if (event.topic === '/topic/sensors') {
-      const time = new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
+      const time = event.recordedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
       sensorValues(event.data, time)
+      const warningDevice = system.devices.find((device) => device.type === 'WIND_WARNING')
+      if (warningDevice && typeof event.data.windSpeed === 'number') {
+        warningDevice.status = Number(event.data.windSpeed > 300)
+        warningDevice.updatedAt = time
+      }
       system.sensorError = event.data.error || ''
       system.esp32Online = true
       system.mqttConnected = true
-      system.points = [...system.points, { time, ...event.data }].slice(-MAX_CHART_POINTS)
+      system.points = mergeChartPoints(system.points, [{ time, ...event.data }])
     } else if (event.topic === '/topic/device-status') {
       const device = system.devices.find((row) => row.id === event.data.deviceId)
       if (device && event.data.status != null) device.status = event.data.status
@@ -136,13 +186,21 @@ function connect() {
 export function startSystem() {
   if (running) return
   running = true
+  chartHistoryLoaded = false
   refreshSystem()
+  refreshChartHistory()
   connect()
-  poll = setInterval(refreshSystem, SYSTEM_REFRESH_MS)
+  poll = setInterval(() => {
+    refreshSystem()
+    if (!chartHistoryLoaded && !system.chartLoading) refreshChartHistory()
+  }, SYSTEM_REFRESH_MS)
 }
 
 export function stopSystem() {
   running = false
+  chartSequence++
+  chartController?.abort()
+  system.chartLoading = false
   clearTimeout(retry)
   clearInterval(poll)
   system.realtime = false
@@ -170,7 +228,7 @@ export async function toggleDevice(device) {
 }
 
 export async function controlAllDevices(status) {
-  const devices = system.devices.filter((device) => device.id !== 3 && device.controllable)
+  const devices = system.devices.filter((device) => device.type !== 'WIND_WARNING' && device.controllable)
   if (
     ![0, 1].includes(status) ||
     system.sendingAll ||

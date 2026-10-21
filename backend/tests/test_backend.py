@@ -261,7 +261,7 @@ def test_health_login_and_profile(client):
 
 def test_devices_and_validation(client):
     devices = client.get('/api/devices').json()['data']
-    assert [d['pinGpio'] for d in devices] == [2, 5]
+    assert [d['pinGpio'] for d in devices] == [2, 5, 18]
     assert client.get('/api/devices/1').json()['data'] == devices[0]
     assert client.get('/api/devices/999').status_code == 404
     assert client.get('/missing').json()['code'] == 404
@@ -276,7 +276,7 @@ def test_sensor_ingestion_and_pagination(client):
     mqtt.handle_message('esp32/sensor/data', '{"temperature":28.5,"humidity":65,"light":1500}')
     mqtt.handle_message('esp32/sensor/data', '{"error":"DHT error","light":1600}')
     sensors = client.get('/api/sensors').json()['data']
-    assert [s['mqttKey'] for s in sensors] == ['temperature', 'humidity', 'light']
+    assert [s['mqttKey'] for s in sensors] == ['temperature', 'humidity', 'light', 'windSpeed']
     latest = client.get('/api/sensors/latest').json()['data']
     assert len(latest) == 3
     assert next(row for row in latest if row['sensorType'] == 'LIGHT')['value'] == 1600
@@ -337,11 +337,11 @@ def test_publish_failure_timeout_and_unmapped(client, connected):
     assert client.post('/api/devices/control', json={'deviceId': 1, 'status': 1}).status_code == 503
     assert client.get('/api/history').json()['data']['content'][0]['status'] == 'FAILED'
     with client.app.state.sessions.begin() as db:
-        db.add(Device(id=3, name='Existing third lamp', pin_gpio=21, status=0))
+        db.add(Device(id=99, name='Existing unmapped lamp', pin_gpio=21, status=0))
         db.add(History(device_id=2, action='ON', status='PENDING', timestamp=now() - timedelta(minutes=1)))
     connected.expire_pending()
     assert client.get('/api/history?status=PENDING').json()['data']['totalElements'] == 0
-    assert client.post('/api/devices/control', json={'deviceId': 3, 'status': 1}).status_code == 400
+    assert client.post('/api/devices/control', json={'deviceId': 99, 'status': 1}).status_code == 400
     assert client.post('/api/devices/control', json={'deviceId': 999, 'status': 1}).status_code == 404
 
 
@@ -349,7 +349,9 @@ def test_websocket_sensor_and_device_events(client):
     with client.websocket_connect('/ws') as ws:
         assert ws.receive_json() == {'type': 'authenticated'}
         client.app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
-        assert ws.receive_json() == {'topic': '/topic/sensors', 'data': {'light': 123}}
+        event = ws.receive_json()
+        assert event['topic'] == '/topic/sensors' and event['data'] == {'light': 123}
+        assert event['recordedAt'] == client.get('/api/sensors/latest').json()['data'][0]['recordedAt']
         client.app.state.mqtt.handle_message('esp32/led1/status', 'ON')
         event = ws.receive_json()
         assert event['topic'] == '/topic/device-status'
@@ -370,7 +372,9 @@ def test_browser_websocket_authenticates_first_frame(client):
         ws.send_json({'type': 'auth', 'token': token})
         assert ws.receive_json() == {'type': 'authenticated'}
         client.app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
-        assert ws.receive_json() == {'topic': '/topic/sensors', 'data': {'light': 123}}
+        event = ws.receive_json()
+        assert event['topic'] == '/topic/sensors' and event['data'] == {'light': 123}
+        assert event['recordedAt'] == client.get('/api/sensors/latest').json()['data'][0]['recordedAt']
 
 
 @pytest.mark.parametrize('auth', [{}, {'type': 'auth', 'token': 'forged'},
@@ -492,3 +496,36 @@ def test_history_action_and_sort_filters(client):
     assert client.get('/api/history?action=ON&sort=desc').json()['data']['content'][0]['timestamp'].endswith('10:02:00')
     assert client.get('/api/history?action=bad').status_code == 400
     assert client.get('/api/history?sort=bad').status_code == 400
+
+
+def test_chart_history_empty_and_authentication(client):
+    assert client.get('/api/sensors/chart').json()['data'] == []
+    for limit in [0, 31, -1]:
+        assert client.get('/api/sensors/chart', params={'limit': limit}).status_code == 400
+    client.headers.pop('Authorization')
+    assert client.get('/api/sensors/chart').status_code == 401
+
+
+def test_chart_history_latest_30_times_all_sensors_and_partial_readings(client):
+    start = datetime(2026, 10, 21, 12)
+    with client.app.state.sessions.begin() as db:
+        for index in range(35):
+            for sensor_id in range(1, 5):
+                if index == 34 and sensor_id == 1:
+                    continue  # A DHT error must not turn into a fabricated zero.
+                db.add(DataSensor(sensor_id=sensor_id, value=index * 10 + sensor_id,
+                                  recorded_at=start + timedelta(seconds=index * 2, microseconds=sensor_id * 100)))
+        # If multiple values exist in one second, keep the last recorded value.
+        db.add(DataSensor(sensor_id=4, value=450, recorded_at=start + timedelta(seconds=68, microseconds=900)))
+        other = Sensor(name='Unknown sensor', type='UNKNOWN', mqtt_key='unknown')
+        db.add(other)
+        db.flush()
+        db.add(DataSensor(sensor_id=other.id, value=999, recorded_at=start + timedelta(days=1)))
+    response = client.get('/api/sensors/chart')
+    assert response.status_code == 200
+    points = response.json()['data']
+    assert len(points) == 30
+    assert points[0] == {'time': '2026-10-21 12:00:10', 'temperature': 51, 'humidity': 52, 'light': 53, 'windSpeed': 54}
+    assert points[-1] == {'time': '2026-10-21 12:01:08', 'humidity': 342, 'light': 343, 'windSpeed': 450}
+    assert [point['time'] for point in points] == sorted(point['time'] for point in points)
+    assert client.get('/api/sensors/chart?limit=2').json()['data'] == points[-2:]

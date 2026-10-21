@@ -117,12 +117,14 @@ import Dashboard from './views/Dashboard.vue'
 import DataSensors from './views/DataSensors.vue'
 import ActionHistory from './views/ActionHistory.vue'
 import UserProfile from './views/UserProfile.vue'
+import WindAlerts from './views/WindAlerts.vue'
 
 const views = {
   dashboard: Dashboard,
   sensors: DataSensors,
   history: ActionHistory,
   profile: UserProfile,
+  windAlerts: WindAlerts,
 }
 const currentView = ref('dashboard')
 const activeComponent = computed(() => views[currentView.value] || Dashboard)
@@ -145,6 +147,7 @@ function clearSession() {
     devices: [],
     sensors: {},
     points: [],
+    chartError: '',
     error: '',
     sensorError: '',
     controlError: '',
