@@ -105,7 +105,12 @@
                 </span>
               </td>
               <td class="px-6 py-4 text-sm font-bold text-gray-800">{{ item.value }}</td>
-              <td class="px-6 py-4 text-sm text-gray-500">{{ item.time }}</td>
+              <td class="px-6 py-4 text-sm text-gray-500">
+                <div class="flex items-center gap-2">
+                  <span class="whitespace-nowrap">{{ item.time }}</span>
+                  <CopyTimestamp :text="item.time" />
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -172,6 +177,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import CopyTimestamp from '../components/CopyTimestamp.vue'
 import { usePage } from '../composables/usePage'
 const searchType = ref('all'),
   searchValue = ref('')

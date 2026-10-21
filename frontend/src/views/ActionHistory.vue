@@ -207,7 +207,12 @@
               </td>
 
               <td class="px-6 py-4 text-sm font-medium text-gray-500">
-                {{ log.date }}<br /><span class="text-xs text-gray-400">{{ log.time }}</span>
+                <div class="flex items-center gap-2">
+                  <span class="whitespace-nowrap">
+                    {{ log.date }}<br /><span class="text-xs text-gray-400">{{ log.time }}</span>
+                  </span>
+                  <CopyTimestamp :text="log.timestamp" />
+                </div>
               </td>
             </tr>
           </tbody>
@@ -275,6 +280,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import ConnectionStatus from '../components/ConnectionStatus.vue'
+import CopyTimestamp from '../components/CopyTimestamp.vue'
 import { system } from '../services/system'
 import { usePage } from '../composables/usePage'
 const searchDevice = ref('all'),
@@ -328,6 +334,7 @@ const paginatedData = computed(() =>
         row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
       deviceStatus: success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
       deviceStatusColor: success ? 'bg-emerald-500' : 'bg-gray-300',
+      timestamp: row.timestamp,
       date: row.timestamp.split(' ')[0],
       time: row.timestamp.split(' ')[1] || '',
     }
