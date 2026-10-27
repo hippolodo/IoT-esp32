@@ -27,14 +27,7 @@
     <div class="rounded-2xl bg-white p-5 border border-gray-100">
       <h3 class="mb-4 font-bold">Số cảnh báo từng ngày trong tháng {{ month }}</h3>
       <div class="h-80"><Bar :data="chartData" :options="chartOptions" /></div>
-      <p class="mt-3 text-xs text-gray-500">Chọn cột hoặc ngày bên dưới để xem chi tiết. Ngày không có cảnh báo hiển thị 0.</p>
-      <div class="mt-4 grid grid-cols-4 sm:grid-cols-7 gap-2">
-        <button v-for="day in days" :key="day.date" type="button" @click="selectedDate = day.date"
-          :aria-pressed="selectedDate === day.date"
-          :class="['rounded-lg border p-2 text-sm', selectedDate === day.date ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-200 hover:bg-blue-50']">
-          Ngày {{ Number(day.date.slice(-2)) }}<br /><strong>{{ day.count }}</strong>
-        </button>
-      </div>
+      <p class="mt-3 text-xs text-gray-500">Chọn cột trên biểu đồ để xem chi tiết. Ngày không có cảnh báo hiển thị 0.</p>
     </div>
     <div class="rounded-2xl bg-white p-5 border border-gray-100">
       <h3 class="mb-4 font-bold">Chi tiết ngày {{ selectedDate }} · {{ total }} cảnh báo</h3>

@@ -16,11 +16,10 @@
     <p v-if="system.controlError" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">
       {{ system.controlError }}
     </p>
-    <p class="mb-3 text-xs text-gray-500">Giá trị gần nhất · {{ latestTime }}. Ánh sáng là ADC đảo chiều: sáng tăng, che giảm.</p>
     <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6 mb-8">
       <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
         <div class="flex justify-between items-center mb-4">
-          <span class="text-xs font-bold text-gray-400">TỐC ĐỘ GIÓ (GIẢ LẬP)</span>
+          <span class="text-xs font-bold text-gray-400">TỐC ĐỘ GIÓ</span>
           <i class="fa-solid fa-wind text-cyan-600" aria-hidden="true"></i>
         </div>
         <p><span class="text-4xl font-bold">{{ system.sensors.windSpeed?.value ?? '—' }}</span> m/s</p>
