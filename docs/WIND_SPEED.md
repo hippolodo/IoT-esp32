@@ -4,8 +4,8 @@
 
 1. Nối GPIO18 → điện trở 220–330 Ω → chân dương LED cảnh báo; chân âm LED → GND.
    Đây là LED riêng, không thay hai LED điều khiển GPIO2/GPIO5.
-2. Khởi động lại backend. Startup tự tạo bảng `WindSpeed` và bổ sung cảm biến
-   `WIND_SPEED` vào database hiện có, không xóa lịch sử.
+2. Dùng database đã có bảng `WindSpeed`, cảm biến `WIND_SPEED` và đèn loại
+   `WIND_WARNING`, rồi khởi động backend. BE không tự tạo bảng hay seed dữ liệu.
 3. Nạp firmware mới từ thư mục gốc dự án:
 
    ```powershell
@@ -32,11 +32,15 @@
   `device_type=WIND_WARNING`, GPIO18. Đây chính là đèn cảnh báo gió trên Dashboard.
   API thiết bị trả `type=WIND_WARNING`, `controllable=false`; nút bật/tắt tất cả
   không tác động đèn này. Trạng thái trong DB được cập nhật theo số đo gió gần nhất.
-- `backend/app/database.py`: bổ sung Sensor (`type=WIND_SPEED`, `mqtt_key=windSpeed`,
-  `unit=m/s`, `module=ESP32 random 0–500`); model `WindSpeed` cho từng đợt cảnh báo.
-- `backend/app/mqtt.py`: kiểm tra số hữu hạn trong khoảng 0–500, lưu từng số đo vào
+- `backend/app/models/__init__.py`: model `Sensor`, `WindSpeed` và các bảng khác.
+  Database cần có Sensor (`type=WIND_SPEED`, `mqtt_key=windSpeed`, `unit=m/s`,
+  `module=ESP32 random 0–500`); startup không tự bổ sung bản ghi này.
+- `backend/app/services/mqtt.py`: kiểm tra số hữu hạn trong khoảng 0–500, lưu từng số đo vào
   `datasensors`; lưu một `WindSpeed` khi bắt đầu đợt vượt ngưỡng.
 - `frontend/src/services/system.js`: nhận WebSocket và cập nhật ô tốc độ gió Dashboard.
+- `backend/app/routers/alerts.py` khai báo API thống kê; phần truy vấn nằm trong
+  `backend/app/services/alerts.py`. Lịch sử cảnh báo ở `routers/history.py` và
+  `services/history.py`.
 - `frontend/src/views/DataSensors.vue`: dùng API phân trang/bộ lọc hiện có.
 - `frontend/src/views/WindAlerts.vue`: vẽ biểu đồ cột bằng Chart.js/vue-chartjs,
   chọn tháng/ngày. `frontend/src/composables/useWindAlerts.js` tải ban đầu,

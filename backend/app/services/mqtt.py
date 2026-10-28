@@ -7,21 +7,14 @@ from datetime import timedelta
 from time import monotonic
 
 import paho.mqtt.client as mqtt
-from sqlalchemy import or_, select
 
-from .contracts import date_string
-from .database import DataSensor, Device, History, Sensor, WindSpeed, now
+from ..contracts import ControlError, date_string, execute_sql, now
 
 log = logging.getLogger(__name__)
 ESP32_OFFLINE_TIMEOUT_SECONDS = 20
 MQTT_KEEPALIVE_SECONDS = 15
 SENSOR_KEYS = ("temperature", "humidity", "light", "windSpeed")
 WIND_ALERT_THRESHOLD = 300
-
-
-class ControlError(Exception):
-    def __init__(self, message, code):
-        self.message, self.code = message, code
 
 
 class EventHub:
@@ -125,23 +118,36 @@ class MqttService:
                     continue
                 if key == "windSpeed" and not 0 <= value <= 500:
                     continue
-                sensor = db.scalars(select(Sensor).where(or_(
-                    Sensor.mqtt_key == key, Sensor.type == key.upper()))).first()
+                sensor = execute_sql(db, """
+                    SELECT id FROM sensors
+                    WHERE mqtt_key = :mqtt_key OR type = :sensor_type LIMIT 1
+                """, {'mqtt_key': key, 'sensor_type': key.upper()}).mappings().first()
                 if sensor:
                     if key == "windSpeed":
-                        warning_device = db.scalar(select(Device).where(Device.device_type == "WIND_WARNING"))
+                        warning_device = execute_sql(db, """
+                            SELECT id FROM devices WHERE device_type = 'WIND_WARNING' LIMIT 1
+                        """).mappings().first()
                         if warning_device is not None:
-                            warning_device.status = int(value > WIND_ALERT_THRESHOLD)
-                            warning_device.updated_at = recorded_at
-                        # Read persisted state before inserting, so backend restarts
-                        # do not count the same continuous high-wind episode twice.
-                        previous = db.scalars(select(DataSensor).where(
-                            DataSensor.sensor_id == sensor.id
-                        ).order_by(DataSensor.recorded_at.desc(), DataSensor.id.desc()).limit(1)).first()
-                        if value > WIND_ALERT_THRESHOLD and (previous is None or previous.value <= WIND_ALERT_THRESHOLD):
-                            new_alert = WindSpeed(sensor_id=sensor.id, speed=float(value), recorded_at=recorded_at)
-                            db.add(new_alert)
-                    db.add(DataSensor(sensor_id=sensor.id, value=float(value), recorded_at=recorded_at))
+                            execute_sql(db, """
+                                UPDATE devices SET status = :status, updated_at = :recorded_at
+                                WHERE id = :id
+                            """, {'status': int(value > WIND_ALERT_THRESHOLD), 'recorded_at': recorded_at,
+                                  'id': warning_device['id']})
+                        previous = execute_sql(db, """
+                            SELECT value FROM datasensors WHERE sensor_id = :sensor_id
+                            ORDER BY recorded_at DESC, id DESC LIMIT 1
+                        """, {'sensor_id': sensor['id']}).mappings().first()
+                        if value > WIND_ALERT_THRESHOLD and (previous is None or previous['value'] <= WIND_ALERT_THRESHOLD):
+                            result = execute_sql(db, """
+                                INSERT INTO WindSpeed (sensor_id, speed, recorded_at)
+                                VALUES (:sensor_id, :speed, :recorded_at)
+                            """, {'sensor_id': sensor['id'], 'speed': float(value), 'recorded_at': recorded_at})
+                            new_alert = {'id': result.lastrowid, 'speed': float(value),
+                                         'recordedAt': date_string(recorded_at)}
+                    execute_sql(db, """
+                        INSERT INTO datasensors (sensor_id, value, recorded_at)
+                        VALUES (:sensor_id, :value, :recorded_at)
+                    """, {'sensor_id': sensor['id'], 'value': float(value), 'recorded_at': recorded_at})
                 clean[key] = value
         if isinstance(values.get("error"), str):
             clean["error"] = values["error"]
@@ -149,73 +155,89 @@ class MqttService:
             self.esp_online = True
             self.last_seen = monotonic()
             self.hub.emit("/topic/sensors", clean, recorded_at=date_string(recorded_at))
-        # Notify statistics only after the new alert has been committed.
+        # The transaction above is committed before clients query the new alert.
         if new_alert is not None:
-            self.hub.emit("/topic/wind-alerts", {
-                "id": new_alert.id, "speed": new_alert.speed,
-                "recordedAt": date_string(new_alert.recorded_at),
-            })
+            self.hub.emit("/topic/wind-alerts", new_alert)
 
     def _device_status(self, device_id, payload, retained):
         if payload not in {"ON", "OFF", "FAIL"}:
             return
         self.expire_pending()
         with self.sessions.begin() as db:
-            device = db.get(Device, device_id)
-            if device is None or device.device_type == "WIND_WARNING":
+            device = execute_sql(db, "SELECT * FROM devices WHERE id = :id",
+                                 {'id': device_id}).mappings().first()
+            if device is None or device['device_type'] == "WIND_WARNING":
                 return
+            status, updated_at = device['status'], device['updated_at']
             if payload != "FAIL":
-                device.status = int(payload == "ON")
-                device.updated_at = now()
-            # A retained snapshot on subscribe is not a command acknowledgment.
-            pending = None if retained else db.scalars(select(History).where(
-                History.device_id == device_id, History.status == "PENDING"
-            ).order_by(History.id.desc())).first()
-            if pending and (payload == "FAIL" or pending.action == payload):
-                pending.status = "FAILED" if payload == "FAIL" else "SUCCESS"
-            data = {"deviceId": device_id, "status": device.status,
-                    "timestamp": date_string(device.updated_at), "result": payload}
+                status, updated_at = int(payload == "ON"), now()
+                execute_sql(db, """
+                    UPDATE devices SET status = :status, updated_at = :updated_at WHERE id = :id
+                """, {'status': status, 'updated_at': updated_at, 'id': device_id})
+            # Retained snapshots update device state, but do not acknowledge commands.
+            pending = None if retained else execute_sql(db, """
+                SELECT id, action FROM histories
+                WHERE device_id = :device_id AND status = 'PENDING'
+                ORDER BY id DESC LIMIT 1
+            """, {'device_id': device_id}).mappings().first()
+            if pending and (payload == "FAIL" or pending['action'] == payload):
+                execute_sql(db, "UPDATE histories SET status = :status WHERE id = :id",
+                            {'status': 'FAILED' if payload == 'FAIL' else 'SUCCESS', 'id': pending['id']})
+            data = {"deviceId": device_id, "status": status,
+                    "timestamp": date_string(updated_at), "result": payload}
         self.hub.emit("/topic/device-status", data)
 
     def control(self, device_id, status, user_id):
         with self.lock:
             self.expire_pending()
             with self.sessions.begin() as db:
-                device = db.get(Device, device_id)
+                device = execute_sql(db, "SELECT * FROM devices WHERE id = :id",
+                                     {'id': device_id}).mappings().first()
                 if device is None:
                     raise ControlError("Không tìm thấy thiết bị", 404)
-                if device.device_type == "WIND_WARNING":
+                if device['device_type'] == "WIND_WARNING":
                     raise ControlError("Đèn cảnh báo hoạt động tự động, không nhận lệnh bật/tắt", 400)
                 led = self.settings.device_map.get(device_id)
                 if led is None:
                     raise ControlError("Thiết bị chưa được ánh xạ trong MQTT_DEVICE_MAP", 400)
                 if not self.settings.mqtt_enabled or not self.client.is_connected():
                     raise ControlError("MQTT broker chưa kết nối", 503)
-                pending = db.scalars(select(History).where(
-                    History.device_id == device_id, History.status == "PENDING")).first()
+                pending = execute_sql(db, """
+                    SELECT id FROM histories
+                    WHERE device_id = :device_id AND status = 'PENDING' LIMIT 1
+                """, {'device_id': device_id}).first()
                 if pending:
                     raise ControlError("Thiết bị đang chờ phản hồi lệnh trước", 409)
                 action = "ON" if status == 1 else "OFF"
-                history = History(device_id=device_id, user_id=user_id, action=action, status="PENDING", timestamp=now())
-                db.add(history)
-                db.flush()
-                history_id = history.id
-            # Commit before publishing so the callback can find its pending row.
+                result = execute_sql(db, """
+                    INSERT INTO histories (device_id, user_id, action, status, timestamp)
+                    VALUES (:device_id, :user_id, :action, 'PENDING', :timestamp)
+                """, {'device_id': device_id, 'user_id': user_id, 'action': action, 'timestamp': now()})
+                history_id = result.lastrowid
+            # Commit before publishing so the MQTT callback can find the PENDING row.
             try:
                 result = self.client.publish(f"esp32/{led}/control", action, qos=1, retain=False)
                 if result.rc != mqtt.MQTT_ERR_SUCCESS:
                     raise RuntimeError(f"MQTT publish error: {result.rc}")
             except Exception as exc:
                 with self.sessions.begin() as db:
-                    db.get(History, history_id).status = "FAILED"
+                    execute_sql(db, "UPDATE histories SET status = 'FAILED' WHERE id = :id",
+                                {'id': history_id})
                 raise ControlError("Không gửi được lệnh MQTT", 503) from exc
 
     def expire_pending(self):
+        events = []
         with self.lock, self.sessions.begin() as db:
             cutoff = now() - timedelta(seconds=self.settings.command_timeout)
-            rows = db.scalars(select(History).where(History.status == "PENDING", History.timestamp < cutoff)).all()
+            rows = execute_sql(db, """
+                SELECT h.id, h.device_id, d.status AS device_status
+                FROM histories AS h
+                LEFT JOIN devices AS d ON d.id = h.device_id
+                WHERE h.status = 'PENDING' AND h.timestamp < :cutoff
+            """, {'cutoff': cutoff}).mappings().all()
             for row in rows:
-                row.status = "FAILED"
-                self.hub.emit("/topic/device-status", {"deviceId": row.device_id,
-                              "status": row.device.status if row.device else None,
-                              "timestamp": date_string(now()), "result": "TIMEOUT"})
+                execute_sql(db, "UPDATE histories SET status = 'FAILED' WHERE id = :id", {'id': row['id']})
+                events.append({"deviceId": row['device_id'], "status": row['device_status'],
+                               "timestamp": date_string(now()), "result": "TIMEOUT"})
+        for event in events:
+            self.hub.emit("/topic/device-status", event)

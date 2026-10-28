@@ -3,17 +3,19 @@ from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import inspect, select, text
+from sqlalchemy import select
 
 from app.config import Settings
-from app.database import DataSensor, Sensor, WindSpeed, initialize_database, make_database, seed_database
+from db_setup import prepare_test_database
+from app.models import DataSensor, Sensor, WindSpeed
 from app.main import create_app
-from app.mqtt import MqttService
+from app.services.mqtt import MqttService
 
 
 @pytest.fixture
 def client(tmp_path):
     app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'wind.sqlite'}", mqtt_enabled=False))
+    prepare_test_database(app)
     with TestClient(app) as client:
         login = client.post('/api/auth/login', json={'username': 'admin', 'password': '123456'})
         client.headers['Authorization'] = f"Bearer {login.json()['data']['accessToken']}"
@@ -24,34 +26,7 @@ def send(client, value):
     client.app.state.mqtt.handle_message('esp32/sensor/data', json.dumps({'windSpeed': value}))
 
 
-def test_rename_legacy_alert_table_preserves_rows(tmp_path):
-    engine, sessions = make_database(f"sqlite:///{tmp_path / 'legacy-wind.sqlite'}")
-    try:
-        initialize_database(engine)
-        seed_database(sessions)
-        with sessions.begin() as db:
-            sensor_id = db.scalar(select(Sensor.id).where(Sensor.mqtt_key == 'windSpeed'))
-            db.add(WindSpeed(sensor_id=sensor_id, speed=420, recorded_at=datetime(2026, 10, 21)))
-        with engine.begin() as connection:
-            connection.execute(text('ALTER TABLE "WindSpeed" RENAME TO wind_alerts'))
-        initialize_database(engine)
-        initialize_database(engine)
-        tables = inspect(engine).get_table_names()
-        assert 'WindSpeed' in tables and 'wind_alerts' not in tables
-        with sessions() as db:
-            rows = db.scalars(select(WindSpeed)).all()
-            assert len(rows) == 1 and rows[0].speed == 420
-    finally:
-        engine.dispose()
-
-
-def test_wind_seed_existing_installation_and_filter(client):
-    with client.app.state.sessions.begin() as db:
-        sensor = db.scalar(select(Sensor).where(Sensor.mqtt_key == 'windSpeed'))
-        db.delete(sensor)
-    # Simulate a database which already contains the original three sensors.
-    seed_database(client.app.state.sessions)
-    seed_database(client.app.state.sessions)
+def test_wind_sensor_catalog_and_filter(client):
     sensors = client.get('/api/sensors').json()['data']
     assert len(sensors) == 4
     wind = next(s for s in sensors if s['type'] == 'WIND_SPEED')
@@ -69,8 +44,7 @@ def test_wind_seed_existing_installation_and_filter(client):
     assert next(d for d in devices if d['type'] == 'WIND_WARNING')['controllable'] is False
 
 
-def test_warning_device_seed_state_and_control_protection(client):
-    seed_database(client.app.state.sessions)
+def test_warning_device_state_and_control_protection(client):
     devices = client.get('/api/devices').json()['data']
     warnings = [d for d in devices if d['type'] == 'WIND_WARNING']
     assert len(warnings) == 1

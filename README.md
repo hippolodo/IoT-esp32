@@ -22,7 +22,7 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
 | Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
-| Kiểm thử | 94 kiểm thử backend và 7 kiểm thử frontend đã đạt |
+| Kiểm thử | 95 kiểm thử backend và 7 kiểm thử frontend đã đạt |
 | Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
 Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái

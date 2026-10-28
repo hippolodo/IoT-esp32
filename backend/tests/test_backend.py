@@ -7,8 +7,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.contracts import time_range
-from app.database import AuthSession, DataSensor, Device, History, Sensor, User, initialize_database, make_database, now, seed_database
+from app.contracts import now, time_range
+from app.database import make_database
+from db_setup import prepare_test_database
+from app.models import AuthSession, DataSensor, Device, History, Sensor, User
 from app.main import create_app
 from app.passwords import verify_password
 
@@ -19,6 +21,30 @@ def registration_body(**overrides):
         'email': 'hiep@example.com', 'password': 'Test-password-123',
         'confirmPassword': 'Test-password-123', **overrides,
     }
+
+
+def test_startup_does_not_create_tables(tmp_path):
+    from sqlalchemy import inspect
+    app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'empty.sqlite'}", mqtt_enabled=False))
+    with TestClient(app) as client:
+        assert client.get('/api/auth/health').status_code == 200
+        assert inspect(app.state.sessions.kw['bind']).get_table_names() == []
+
+
+def test_startup_does_not_add_or_rewrite_catalog_data(tmp_path):
+    from sqlalchemy import func, select
+    app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'existing.sqlite'}", mqtt_enabled=False))
+    prepare_test_database(app)
+    with app.state.sessions.begin() as db:
+        db.delete(db.get(Device, 3))
+        db.delete(db.get(Sensor, 4))
+        db.get(User, 1).full_name = 'Existing user'
+    with TestClient(app) as client:
+        assert client.get('/api/auth/health').status_code == 200
+        with app.state.sessions() as db:
+            assert db.scalar(select(func.count()).select_from(Device)) == 2
+            assert db.scalar(select(func.count()).select_from(Sensor)) == 3
+            assert db.get(User, 1).full_name == 'Existing user'
 
 
 def test_registration_login_profile_and_control(client, connected):
@@ -83,20 +109,6 @@ def test_user_uniqueness_is_enforced_by_database(client):
                 db.add(User(username=username, email=email, password_hash='unused'))
 
 
-def test_registration_migration_preserves_legacy_users(tmp_path):
-    from sqlalchemy import inspect, text
-    engine, sessions = make_database(f"sqlite:///{tmp_path / 'legacy-users.sqlite3'}")
-    with engine.begin() as connection:
-        connection.execute(text('CREATE TABLE users (id INTEGER PRIMARY KEY, username VARCHAR(255) NOT NULL, password_hash VARCHAR(255) NOT NULL, full_name VARCHAR(255), email VARCHAR(255), created_at DATETIME)'))
-        connection.execute(text("INSERT INTO users (id, username, password_hash) VALUES (1, 'legacy', 'unchanged')"))
-    initialize_database(engine)
-    initialize_database(engine)
-    with sessions() as db:
-        assert db.get(User, 1).password_hash == 'unchanged'
-    assert {'uq_users_username', 'uq_users_email'} <= {index['name'] for index in inspect(engine).get_indexes('users')}
-    engine.dispose()
-
-
 def test_password_salts_and_legacy_compatibility():
     from app.passwords import hash_password
     one, two = hash_password('Test-password-123'), hash_password('Test-password-123')
@@ -118,6 +130,7 @@ def test_registration_preserves_legacy_duplicates(tmp_path):
         connection.execute(text("INSERT INTO users (id, username, password_hash, email) VALUES (1, 'legacy', 'unchanged', 'old@example.com'), (2, 'legacy', 'unchanged', 'old@example.com')"))
     engine.dispose()
     app = create_app(Settings(database_url=url, mqtt_enabled=False))
+    prepare_test_database(app)
     with TestClient(app) as client:
         with app.state.sessions() as db:
             assert len(db.query(User).all()) == 2
@@ -212,24 +225,11 @@ def test_expired_session_cannot_control(client, connected):
     connected.client.publish.assert_not_called()
 
 
-def test_existing_history_migration_preserves_rows(tmp_path):
-    from sqlalchemy import text
-    engine, sessions = make_database(f"sqlite:///{tmp_path / 'legacy.sqlite3'}")
-    with engine.begin() as connection:
-        connection.execute(text('CREATE TABLE histories (id INTEGER PRIMARY KEY, device_id INTEGER, action VARCHAR(255), status VARCHAR(255), timestamp DATETIME)'))
-        connection.execute(text("INSERT INTO histories (id, action, status) VALUES (1, 'ON', 'SUCCESS')"))
-    initialize_database(engine)
-    initialize_database(engine)
-    with sessions() as db:
-        row = db.get(History, 1)
-        assert row.action == 'ON' and row.user_id is None
-    engine.dispose()
-
-
 @pytest.fixture
 def client(tmp_path):
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'test.sqlite3'}", mqtt_enabled=False)
     app = create_app(settings)
+    prepare_test_database(app)
     with TestClient(app) as client:
         token = client.post('/api/auth/login', json={'username': 'admin', 'password': '123456'}).json()['data']['accessToken']
         client.headers['Authorization'] = f'Bearer {token}'
@@ -391,7 +391,7 @@ def test_websocket_rejects_invalid_auth_frame(client, auth):
 
 def test_websocket_requires_auth_before_subscribing(client, monkeypatch):
     from starlette.websockets import WebSocketDisconnect
-    monkeypatch.setattr('app.main.WEBSOCKET_AUTH_TIMEOUT_SECONDS', 0.02)
+    monkeypatch.setattr('app.routers.realtime.WEBSOCKET_AUTH_TIMEOUT_SECONDS', 0.02)
     with client.websocket_connect('/ws', headers={'Authorization': ''}) as ws:
         with pytest.raises(WebSocketDisconnect) as exc:
             ws.receive_json()
@@ -402,7 +402,7 @@ def test_websocket_requires_auth_before_subscribing(client, monkeypatch):
 @pytest.mark.parametrize('revoke', ['expired', 'logout'])
 def test_open_websocket_closes_when_session_invalid_without_events(client, monkeypatch, revoke):
     from starlette.websockets import WebSocketDisconnect
-    monkeypatch.setattr('app.main.WEBSOCKET_SESSION_CHECK_SECONDS', 0.02)
+    monkeypatch.setattr('app.routers.realtime.WEBSOCKET_SESSION_CHECK_SECONDS', 0.02)
     with client.websocket_connect('/ws') as ws:
         assert ws.receive_json() == {'type': 'authenticated'}
         if revoke == 'logout':
@@ -427,16 +427,6 @@ def test_reconnect_resubscribes_and_invalid_sensor_values(client):
     assert client.get('/api/sensors/data').json()['data']['totalElements'] == 0
     with pytest.raises(ValueError):
         service.handle_message('esp32/sensor/data', '[]')
-
-
-def test_seed_preserves_existing_data_and_sha256_login(client):
-    with client.app.state.sessions.begin() as db:
-        db.get(Device, 1).pin_gpio = 18
-        db.get(Sensor, 3).unit = 'legacy'
-    seed_database(client.app.state.sessions)
-    assert client.get('/api/devices/1').json()['data']['pinGpio'] == 18
-    assert client.get('/api/sensors').json()['data'][2]['unit'] == 'legacy'
-    assert client.post('/api/auth/login', json={'username': 'admin', 'password': '123456'}).status_code == 200
 
 
 @pytest.mark.parametrize('value,expected_seconds', [
@@ -504,6 +494,59 @@ def test_chart_history_empty_and_authentication(client):
         assert client.get('/api/sensors/chart', params={'limit': limit}).status_code == 400
     client.headers.pop('Authorization')
     assert client.get('/api/sensors/chart').status_code == 401
+
+
+def test_app_instances_keep_database_auth_and_mqtt_separate(tmp_path):
+    first_app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'first.sqlite'}", mqtt_enabled=False,
+                                    device_map={1: 'led1'}))
+    second_app = create_app(Settings(database_url=f"sqlite:///{tmp_path / 'second.sqlite'}", mqtt_enabled=False,
+                                     device_map={2: 'led2'}))
+    prepare_test_database(first_app)
+    prepare_test_database(second_app)
+    with TestClient(first_app) as first, TestClient(second_app) as second:
+        credentials = {'username': 'admin', 'password': '123456'}
+        first_token = first.post('/api/auth/login', json=credentials).json()['data']['accessToken']
+        second_token = second.post('/api/auth/login', json=credentials).json()['data']['accessToken']
+        first.headers['Authorization'] = f'Bearer {first_token}'
+        second.headers['Authorization'] = f'Bearer {first_token}'
+        assert second.get('/api/user/profile').status_code == 401
+        second.headers['Authorization'] = f'Bearer {second_token}'
+        assert second.get('/api/user/profile').status_code == 200
+        first_app.state.mqtt.handle_message('esp32/sensor/data', '{"light":123}')
+        second_app.state.mqtt.handle_message('esp32/sensor/data', '{"light":456}')
+        assert first.get('/api/sensors/latest').json()['data'][0]['value'] == 123
+        assert second.get('/api/sensors/latest').json()['data'][0]['value'] == 456
+        assert first.get('/api/devices/1').json()['data']['controllable'] is True
+        assert second.get('/api/devices/1').json()['data']['controllable'] is False
+
+
+def test_raw_sql_binds_values_and_escapes_search_wildcards(client):
+    client.app.state.mqtt.handle_message('esp32/sensor/data', '{"temperature":28.5,"light":1500}')
+    for value in ['%', '_', '!', "' OR 1=1 --"]:
+        result = client.get('/api/sensors/data', params={'value': value})
+        assert result.status_code == 200 and result.json()['data']['totalElements'] == 0
+    assert client.get('/api/sensors/data', params={'sensorType': "LIGHT' OR 1=1 --"}).json()['data']['totalElements'] == 0
+    assert client.get('/api/history', params={'status': "SUCCESS' OR 1=1 --"}).json()['data']['totalElements'] == 0
+    assert client.get('/api/history', params={'sort': 'desc; DELETE FROM users'}).status_code == 400
+    assert client.post('/api/auth/login', json={'username': "admin' OR 1=1 --", 'password': 'wrong'}).status_code == 401
+    name = "Nguyễn O'Connor; SELECT 1 --"
+    body = registration_body(fullName=name)
+    assert client.post('/api/auth/register', json=body).status_code == 201
+    response = client.post('/api/auth/login', json={'username': body['username'], 'password': body['password']})
+    assert response.status_code == 200 and response.json()['data']['fullName'] == name
+    assert len(client.get('/api/devices').json()['data']) == 3
+
+
+def test_raw_sql_logout_deletes_only_current_session(client):
+    body = {'username': 'admin', 'password': '123456'}
+    first = client.post('/api/auth/login', json=body).json()['data']['accessToken']
+    second = client.post('/api/auth/login', json=body).json()['data']['accessToken']
+    assert first != second
+    client.headers['Authorization'] = f'Bearer {first}'
+    assert client.post('/api/auth/logout').status_code == 200
+    assert client.get('/api/user/profile').status_code == 401
+    client.headers['Authorization'] = f'Bearer {second}'
+    assert client.get('/api/user/profile').status_code == 200
 
 
 def test_chart_history_latest_30_times_all_sensors_and_partial_readings(client):

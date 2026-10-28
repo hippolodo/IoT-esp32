@@ -307,7 +307,7 @@ const chartOptions = ref({
 
 <style scoped>
 .wind-warning-blink {
-  animation: wind-warning-blink 2000ms steps(1, end) infinite;
+  animation: wind-warning-blink 1000ms steps(1, end) infinite;
 }
 
 @keyframes wind-warning-blink {

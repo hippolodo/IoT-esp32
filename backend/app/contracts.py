@@ -1,35 +1,90 @@
+import logging
 import re
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from sqlalchemy import DateTime, bindparam, text
+from starlette.exceptions import HTTPException
+
+log = logging.getLogger(__name__)
+
+
+class ControlError(Exception):
+    def __init__(self, message, code):
+        self.message, self.code = message, code
+
+
+def now():
+    # Keep database timestamps in Vietnam local time, regardless of host timezone.
+    return datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).replace(tzinfo=None)
 
 
 def envelope(data=None, message="OK", code=200):
     return {"success": code < 400, "message": message, "data": data, "code": code}
 
 
+def register_exception_handlers(app):
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        return JSONResponse(envelope(message="Dữ liệu đầu vào không hợp lệ", code=400), status_code=400)
+
+    @app.exception_handler(ValueError)
+    async def value_error(request, exc):
+        return JSONResponse(envelope(message=str(exc), code=400), status_code=400)
+
+    @app.exception_handler(ControlError)
+    async def control_error(request, exc):
+        return JSONResponse(envelope(message=exc.message, code=exc.code), status_code=exc.code)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request, exc):
+        return JSONResponse(envelope(message=str(exc.detail), code=exc.status_code), status_code=exc.status_code)
+
+    @app.exception_handler(Exception)
+    async def server_error(request, exc):
+        log.error("Request failed: %s", request.url.path, exc_info=exc)
+        return JSONResponse(envelope(message="Lỗi hệ thống", code=500), status_code=500)
+
+
+def as_datetime(value):
+    # MySQL returns datetime objects; SQLite text queries can return strings.
+    return datetime.fromisoformat(value) if isinstance(value, str) else value
+
+
 def date_string(value):
-    return value.strftime("%Y-%m-%d %H:%M:%S") if value else "N/A"
+    return as_datetime(value).strftime("%Y-%m-%d %H:%M:%S") if value else "N/A"
+
+
+def execute_sql(db, sql, params=None):
+    """Execute parameterized SQL; preserve datetime binding on MySQL and SQLite."""
+    params = params or {}
+    statement = text(sql)
+    for name, value in params.items():
+        if isinstance(value, datetime):
+            statement = statement.bindparams(bindparam(name, type_=DateTime))
+    return db.execute(statement, params)
 
 
 def device_dict(row):
-    return dict(id=row.id, name=row.name, type=row.device_type, pinGpio=row.pin_gpio,
-                status=row.status, updatedAt=date_string(row.updated_at))
+    return dict(id=row['id'], name=row['name'], type=row['device_type'], pinGpio=row['pin_gpio'],
+                status=row['status'], updatedAt=date_string(row['updated_at']))
 
 
 def sensor_dict(row):
-    return dict(id=row.id, name=row.name, type=row.type, unit=row.unit, pinGpio=row.pin_gpio,
-                mqttKey=row.mqtt_key, module=row.module)
+    return dict(id=row['id'], name=row['name'], type=row['type'], unit=row['unit'], pinGpio=row['pin_gpio'],
+                mqttKey=row['mqtt_key'], module=row['module'])
 
 
 def data_dict(row):
-    return dict(id=row.id, sensorId=row.sensor_id, sensorName=row.sensor.name, sensorType=row.sensor.type,
-                unit=row.sensor.unit, value=row.value, recordedAt=date_string(row.recorded_at))
+    return dict(id=row['id'], sensorId=row['sensor_id'], sensorName=row['sensor_name'], sensorType=row['sensor_type'],
+                unit=row['unit'], value=row['value'], recordedAt=date_string(row['recorded_at']))
 
 
 def history_dict(row):
-    return dict(id=row.id, userId=row.user_id, deviceId=row.device_id, deviceName=row.device.name if row.device else None,
-                action=row.action, status=row.status, timestamp=date_string(row.timestamp))
+    return dict(id=row['id'], userId=row['user_id'], deviceId=row['device_id'], deviceName=row['device_name'],
+                action=row['action'], status=row['status'], timestamp=date_string(row['timestamp']))
 
 
 def parse_date(value):
@@ -56,11 +111,13 @@ def time_range(start, end):
     return first, last
 
 
-def paginate(db, query, page, size, serialize):
+def paginate(db, query_sql, params, page, size, serialize):
     if page < 0 or size <= 0:
         raise ValueError("page phải lớn hơn hoặc bằng 0 và size phải lớn hơn 0")
-    total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery()))
-    content = [serialize(row) for row in db.scalars(query.offset(page * size).limit(size)).all()]
+    total = execute_sql(db, f"SELECT COUNT(*) FROM ({query_sql}) AS page_rows", params).scalar_one()
+    rows = execute_sql(db, query_sql + " LIMIT :_limit OFFSET :_offset",
+                       {**params, '_limit': size, '_offset': page * size}).mappings().all()
+    content = [serialize(row) for row in rows]
     pages = (total + size - 1) // size
     sort = {"empty": False, "sorted": True, "unsorted": False}
     return {"content": content, "pageable": {"pageNumber": page, "pageSize": size,

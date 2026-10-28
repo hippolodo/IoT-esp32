@@ -34,13 +34,13 @@ PubSubClient client(espClient);
 
 unsigned long lastMsg = 0;
 unsigned long lastReconnectAttempt = 0;
-const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 5000;
+const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 2000;
 const unsigned long MQTT_RECONNECT_INTERVAL_MS = 2000;
 const unsigned long LED_SETTLE_MS = 10;
 const uint8_t LIGHT_ADC_BITS = 12;
 const int LIGHT_ADC_MAX = (1 << LIGHT_ADC_BITS) - 1;
 const int WIND_WARNING_THRESHOLD = 300;
-const unsigned long WIND_BLINK_INTERVAL_MS = 1000;
+const unsigned long WIND_BLINK_INTERVAL_MS = 500;
 unsigned long lastWindSample = 0;
 unsigned long lastWindBlink = 0;
 volatile int windSpeed = 0;

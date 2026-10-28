@@ -4,6 +4,12 @@ Python backend thay thế Spring Boot, chạy trên cổng **8088**. Dùng SQLAl
 Paho MQTT 2 và WebSocket thường. Frontend Vue đã nối REST/WebSocket qua Vite proxy
 đến cổng 8088; dashboard nhận cảm biến, điều khiển đèn và đồng bộ trạng thái thật.
 
+Backend được chia thành `routers/`, `services/`, `models/`, cùng `schemas.py`
+và `passwords.py`. Xem [bản đồ file và luồng xử lý](ARCHITECTURE.md) để đọc code.
+`main.py` quản lý khởi tạo/lifecycle và gắn router; các endpoint nằm trong `routers/`.
+Các service dùng SQL trực tiếp có tham số qua `execute_sql()` trong `contracts.py`.
+SQLAlchemy quản lý kết nối/transaction; model được giữ để mô tả bảng và phục vụ kiểm thử.
+
 ## Chạy trên Windows PowerShell
 
 Yêu cầu Python 3.11 trở lên, MySQL và Mosquitto (khi kết nối mạch).
@@ -37,18 +43,13 @@ CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 
 ## Database cũ
 
-Giữ các bảng `users`, `devices`, `sensors`, `datasensors`, `histories` cùng tên cột
-snake_case của Spring Boot. Không xóa hay tự sửa dữ liệu cũ; `create_all` chỉ tạo bảng
-còn thiếu, không thay thế công cụ migration khi schema thực tế khác schema trong code.
-Khi khởi động, backend tạo bảng `auth_sessions` và bổ sung cột `histories.user_id`
-nếu còn thiếu. Lịch sử cũ giữ nguyên, `user_id` để NULL.
+BE dùng database đã chuẩn bị sẵn: `users`, `devices`, `sensors`, `datasensors`,
+`histories`, `auth_sessions`, `WindSpeed`, với đầy đủ cột theo `app/models/`.
+Startup không tạo bảng, không sửa schema và không thêm dữ liệu mặc định.
+Nếu thay đổi cấu trúc database, thực hiện riêng bằng SQL/migration trước khi chạy BE.
+Dữ liệu hiện có được giữ nguyên; các API/MQTT tiếp tục đọc và ghi theo nghiệp vụ.
 
-Chỉ seed khi từng bảng danh mục rỗng: 2 đèn GPIO 2/5, DHT11 GPIO 4,
-LDR GPIO 33 với đơn vị ADC. Database cũ giữ nguyên metadata: nếu trước đây là GPIO
-18/19/21 hoặc đơn vị lux, cần đối chiếu phần cứng và cập nhật thủ công.
-Các bản ghi đo và lịch sử hiện có được giữ nguyên.
-
-Tài khoản mới trên database trống: `admin` / `123456`. Có thể tạo tài khoản bằng
+BE không tự tạo tài khoản mặc định. Dùng tài khoản đang có hoặc tạo tài khoản bằng
 nút **Chưa có tài khoản? Đăng ký** trên FE hoặc `POST /api/auth/register`.
 Tài khoản mới dùng PBKDF2-SHA256 (600.000 vòng, salt ngẫu nhiên); đăng nhập vẫn
 đọc SHA-256 để tương thích tài khoản Java/seed cũ. Đăng nhập trả `accessToken` có hiệu lực 24 giờ;
@@ -79,10 +80,9 @@ Thành công trả HTTP 201 với `userId,username,fullName,email`; không trả
 hoặc token. FE chuyển về đăng nhập và điền sẵn username; đăng nhập mới cấp phiên.
 Dữ liệu không hợp lệ trả 400, trùng tên đăng nhập/email trả 409.
 
-Backend thêm unique index tên đăng nhập/email vào database cũ khi dữ liệu cho phép,
-không xóa/sửa tài khoản hiện có. Nếu có dữ liệu trùng từ trước, giữ nguyên dữ liệu,
-ghi log và bỏ qua index tương ứng. Luồng đăng ký có khóa trong tiến trình để kiểm tra
-trùng và tạo tài khoản tuần tự, phù hợp cấu hình một worker được hướng dẫn ở trên.
+Database cần có unique index tên đăng nhập/email theo model; startup không tự thêm
+index. Luồng đăng ký có khóa trong tiến trình để kiểm tra trùng và tạo tài khoản
+tuần tự, phù hợp cấu hình một worker được hướng dẫn ở trên.
 
 Trong Swagger (`/docs`), gọi `/api/auth/login`, sao chép `data.accessToken`,
 bấm **Authorize** và dán token (không thêm chữ `Bearer`). Swagger sẽ gửi token
