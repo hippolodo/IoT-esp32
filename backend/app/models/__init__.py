@@ -50,14 +50,6 @@ class History(Base):
     device: Mapped[Device | None] = relationship(lazy="joined")
 
 
-class WindSpeed(Base):
-    __tablename__ = "WindSpeed"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    sensor_id: Mapped[int] = mapped_column(ForeignKey("sensors.id"))
-    speed: Mapped[float] = mapped_column(Float)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=now, index=True)
-
-
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (

@@ -1,7 +1,7 @@
-"""Control history and wind-warning history using parameterized SQL."""
+"""Control history using parameterized SQL."""
 from datetime import datetime
 from sqlalchemy.orm import Session
-from ..contracts import date_string, history_dict, now, paginate, parse_date, time_range
+from ..contracts import history_dict, now, paginate, parse_date, time_range
 
 
 def history_page(
@@ -51,30 +51,8 @@ def history(
     size: int = 10,
     action: str | None = None,
     sort: str = 'desc',
-    deviceType: str | None = None,
 ):
     start, end = time_range(startTime, endTime)
-    if deviceType is not None:
-        if deviceType != "WIND_WARNING" or deviceId is not None:
-            raise ValueError("deviceType phải là WIND_WARNING và không đi kèm deviceId")
-        if sort not in {"asc", "desc"}:
-            raise ValueError("sort phải là asc hoặc desc")
-        if action and action not in {"ON", "OFF", "ALERT"}:
-            raise ValueError("action phải là ON, OFF hoặc ALERT")
-        sql = 'SELECT id, speed, recorded_at FROM WindSpeed WHERE 1 = 1'
-        params = {}
-        if (status and status != "RECORDED") or (action and action != "ALERT"):
-            sql += ' AND 1 = 0'
-        if start:
-            sql += ' AND recorded_at >= :start AND recorded_at < :end'
-            params.update(start=start, end=end)
-        direction = sort.upper()
-        sql += f' ORDER BY recorded_at {direction}, id {direction}'
-        return paginate(db, sql, params, page, size, lambda row: {
-            "id": row['id'], "eventType": "WIND_WARNING", "userId": None, "deviceId": None,
-            "deviceName": "Đèn cảnh báo", "action": "ALERT", "status": "RECORDED",
-            "speed": row['speed'], "timestamp": date_string(row['recorded_at']),
-        })
     return history_page(db, deviceId, status, start, end, page, size, action=action, sort=sort)
 
 

@@ -1,12 +1,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <esp_wifi.h>
+#include <Preferences.h>
 #include "DHT.h"
+#include <stdlib.h>
+#include "AlertCounter.h"
 
-// ==========================================
-// 1. CẤU HÌNH WIFI HOTSPOT & MOSQUITTO BROKER
-// ==========================================
 const char* ssid = "Hi";           // Tên Wi-Fi phát từ Laptop
 const char* password = "27112005"; // Mật khẩu Wi-Fi
 const char* mqtt_server = "172.20.10.4"; // IP của Laptop (Broker)
@@ -15,270 +14,172 @@ const int mqtt_port = 1884;
 const char* mqtt_user = "B23DCCN294";
 const char* mqtt_pass = "271105";
 
-const char* status_topic = "esp32/status";
 
-// ==========================================
-// 2. KHAI BÁO CHÂN GPIO (Cập nhật theo thực tế)
-// ==========================================
-#define LDRPIN 33        // Cảm biến ánh sáng LDR cắm ở D33
-#define DHTPIN 4         // Cảm biến DHT11 cắm ở D4
-#define DHTTYPE DHT11
+#define DHTPIN 4
+#define LDRPIN 33
+DHT dht(DHTPIN, DHT11);
+WiFiClient wifi;
+PubSubClient client(wifi);
+Preferences preferences;
+const uint8_t LED_PINS[] = {2, 5, 18};
+const char* KEYS[] = {"temperature", "humidity", "light"};
+const float LIMITS[] = {50, 100, 4095};
+const char* CONTROL_TOPICS[] = {"esp32/led1/control", "esp32/led2/control", "esp32/led3/control"};
+const char* STATUS_TOPICS[] = {"esp32/led1/status", "esp32/led2/status", "esp32/led3/status"};
+float thresholds[] = {35, 80, 3000};
+float readings[] = {NAN, NAN, NAN};
+bool manualOn[] = {false, false, false};
+bool blinking[] = {false, false, false};
+AlertCounter alertCounters[3] = {};
+portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
+unsigned long lastPublish = 0, lastReconnect = 0;
 
-#define LED1_PIN 2
-#define LED2_PIN 5
-#define WIND_WARNING_LED_PIN 18 // LED riêng, chỉ cảnh báo tự động, không nhận lệnh MQTT.
-
-DHT dht(DHTPIN, DHTTYPE);
-WiFiClient espClient;
-PubSubClient client(espClient);
-
-unsigned long lastMsg = 0;
-unsigned long lastReconnectAttempt = 0;
-const unsigned long SENSOR_PUBLISH_INTERVAL_MS = 2000;
-const unsigned long MQTT_RECONNECT_INTERVAL_MS = 2000;
-const unsigned long LED_SETTLE_MS = 10;
-const uint8_t LIGHT_ADC_BITS = 12;
-const int LIGHT_ADC_MAX = (1 << LIGHT_ADC_BITS) - 1;
-const int WIND_WARNING_THRESHOLD = 300;
-const unsigned long WIND_BLINK_INTERVAL_MS = 500;
-unsigned long lastWindSample = 0;
-unsigned long lastWindBlink = 0;
-volatile int windSpeed = 0;
-bool windLedOn = false;
-
-void updateWindWarning() {
-  const unsigned long current = millis();
-  if (current - lastWindSample >= SENSOR_PUBLISH_INTERVAL_MS) {
-    lastWindSample = current;
-    windSpeed = random(0, 501); // 0..500 m/s, giả lập ngay trên ESP32.
-  }
-  if (windSpeed > WIND_WARNING_THRESHOLD) {
-    if (current - lastWindBlink >= WIND_BLINK_INTERVAL_MS) {
-      lastWindBlink = current;
-      windLedOn = !windLedOn;
-      digitalWrite(WIND_WARNING_LED_PIN, windLedOn ? HIGH : LOW);
-    }
-  } else {
-    windLedOn = false;
-    digitalWrite(WIND_WARNING_LED_PIN, LOW);
-  }
-}
-
-// Chạy riêng để LED vẫn nháy ngay cả lúc kết nối Wi-Fi/MQTT đang chờ.
-void windWarningTask(void* parameter) {
+// Sampling and blinking keep running while MQTT/Wi-Fi reconnects.
+void sensorTask(void*) {
+  unsigned long lastSample = millis() - 2000;
   for (;;) {
-    updateWindWarning();
+    unsigned long current = millis();
+    if (current - lastSample >= 2000) {
+      lastSample = current;
+      float temperature = dht.readTemperature();
+      float humidity = dht.readHumidity();
+      float light = 4095 - analogRead(LDRPIN);
+      portENTER_CRITICAL(&stateMux);
+      readings[0] = temperature;
+      readings[1] = humidity;
+      readings[2] = light;
+      portEXIT_CRITICAL(&stateMux);
+    }
+    portENTER_CRITICAL(&stateMux);
+    for (int i = 0; i < 3; i++) {
+      // Count one episode on entering a warning, not each physical blink.
+      // Missing readings stop blinking but do not split an existing episode.
+      bool valid = !isnan(readings[i]);
+      blinking[i] = valid && readings[i] > thresholds[i];
+      alertCounters[i] = advanceAlertCounter(alertCounters[i], valid, blinking[i]);
+      bool on = blinking[i] ? (current % 1000 < 500) : manualOn[i];
+      digitalWrite(LED_PINS[i], on ? HIGH : LOW);
+    }
+    portEXIT_CRITICAL(&stateMux);
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-// ==========================================
-// 3. HÀM KẾT NỐI WIFI
-// ==========================================
-void setup_wifi() {
-  delay(100);
-  Serial.println("\n--- DANG KET NOI WIFI HOTSPOT ---");
-
-  WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.print("Bat dau ket noi toi: ");
-    Serial.println(ssid);
-    WiFi.begin(ssid, password);
-
-    int counter = 0;
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(500);
-      Serial.print(".");
-      counter++;
-
-      if (counter >= 20) {
-        Serial.println("\n[Loi Wi-Fi] Thu khoi dong lai card Wi-Fi...");
-        WiFi.disconnect();
-        delay(200);
-        WiFi.begin(ssid, password);
-        counter = 0;
-      }
-    }
-  }
-
-  esp_wifi_set_ps(WIFI_PS_NONE);
-  Serial.println("\n==> WIFI DA KET NOI THANH CONG!");
-  Serial.print("IP ESP32: ");
-  Serial.println(WiFi.localIP());
+void publishAlertCounts() {
+  uint32_t counts[3];
+  portENTER_CRITICAL(&stateMux);
+  for (int i = 0; i < 3; i++) counts[i] = alertCounters[i].count;
+  portEXIT_CRITICAL(&stateMux);
+  String payload = "{\"led1\":" + String(counts[0]) +
+                   ",\"led2\":" + String(counts[1]) +
+                   ",\"led3\":" + String(counts[2]) + "}";
+  client.publish("esp32/leds/alert-counts", payload.c_str(), true);
 }
 
-// ==========================================
-// 4. HÀM NHẬN LỆNH & XÁC NHẬN BẰNG digitalRead
-// ==========================================
-bool publishLedStatus(uint8_t pin, const char* topic, uint8_t expectedState) {
-  bool success = digitalRead(pin) == expectedState;
-  const char* status = success ? (expectedState == HIGH ? "ON" : "OFF") : "FAIL";
-  client.publish(topic, status, true);
-  return success;
+void publishThreshold(int i) {
+  String topic = "esp32/thresholds/" + String(KEYS[i]) + "/status";
+  client.publish(topic.c_str(), String(thresholds[i], 3).c_str(), true);
 }
 
-void controlLed(uint8_t pin, const char* statusTopic, uint8_t state) {
-  digitalWrite(pin, state);
-  delay(LED_SETTLE_MS);
-  Serial.println(publishLedStatus(pin, statusTopic, state) ? "Success" : "Failed");
+void setManual(int i, bool on) {
+  portENTER_CRITICAL(&stateMux);
+  manualOn[i] = on;
+  portEXIT_CRITICAL(&stateMux);
+  // ON/OFF acknowledges the manual setting; warning overrides the physical pin.
+  client.publish(STATUS_TOPICS[i], on ? "ON" : "OFF", true);
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
-  for (unsigned int i = 0; i < length; i++) {
-    message += (char)payload[i];
+  for (unsigned int i = 0; i < length; i++) message += (char)payload[i];
+  for (int i = 0; i < 3; i++) {
+    String thresholdTopic = "esp32/thresholds/" + String(KEYS[i]) + "/control";
+    if (String(topic) == thresholdTopic) {
+      char* end;
+      float value = strtof(message.c_str(), &end);
+      if (end == message.c_str() || *end != '\0' || !isfinite(value) || value < 0 || value > LIMITS[i]) return;
+      portENTER_CRITICAL(&stateMux);
+      thresholds[i] = value;
+      portEXIT_CRITICAL(&stateMux);
+      preferences.putFloat(KEYS[i], value);
+      publishThreshold(i);
+      return;
+    }
   }
-
-  String topicStr = String(topic);
-  Serial.print("Nhan lenh Tu Mosquitto [");
-  Serial.print(topicStr);
-  Serial.print("]: ");
-  Serial.println(message);
-
-  uint8_t state;
-  if (message == "ON" || message == "1") {
-    state = HIGH;
-  } else if (message == "OFF" || message == "0") {
-    state = LOW;
-  } else {
-    return;
-  }
-
-  if (topicStr == "esp32/led1/control") {
-    controlLed(LED1_PIN, "esp32/led1/status", state);
-  } else if (topicStr == "esp32/led2/control") {
-    controlLed(LED2_PIN, "esp32/led2/status", state);
-  } else if (topicStr == "esp32/led_all/control") {
-    digitalWrite(LED1_PIN, state);
-    digitalWrite(LED2_PIN, state);
-    delay(LED_SETTLE_MS);
-    publishLedStatus(LED1_PIN, "esp32/led1/status", state);
-    publishLedStatus(LED2_PIN, "esp32/led2/status", state);
-    Serial.println("Success");
+  if (message != "ON" && message != "OFF" && message != "1" && message != "0") return;
+  bool on = message == "ON" || message == "1";
+  for (int i = 0; i < 3; i++) {
+    if (String(topic) == CONTROL_TOPICS[i] || String(topic) == "esp32/led_all/control") setManual(i, on);
   }
 }
 
-// ==========================================
-// 5. HÀM KẾT NỐI MQTT BROKER
-// ==========================================
-bool reconnect() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("[LOI HE THONG] Wi-Fi bi ngat! Dang ket noi lai...");
-    WiFi.reconnect();
-    return false;
+void reconnect() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  String id = "ESP32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  if (!client.connect(id.c_str(), mqtt_user, mqtt_pass, "esp32/status", 1, true, "STATUS: OFFLINE")) return;
+  client.publish("esp32/status", "STATUS: ONLINE", true);
+  client.subscribe("esp32/led_all/control");
+  for (int i = 0; i < 3; i++) {
+    client.subscribe(CONTROL_TOPICS[i], 1);
+    String topic = "esp32/thresholds/" + String(KEYS[i]) + "/control";
+    client.subscribe(topic.c_str(), 1);
+    client.publish(STATUS_TOPICS[i], manualOn[i] ? "ON" : "OFF", true);
+    publishThreshold(i);
   }
-
-  Serial.print("Dang ket noi den Mosquitto (");
-  Serial.print(mqtt_server);
-  Serial.print(")... ");
-
-  String clientId = "ESP32Client-";
-  clientId += String(random(0xffff), HEX);
-
-  bool isConnected = false;
-  const char* willTopic = status_topic;
-  const char* willMessage = "STATUS: OFFLINE (Mat ket noi dot ngot)";
-  int willQoS = 1;
-  bool willRetain = true;
-
-  if (strlen(mqtt_user) > 0) {
-    isConnected = client.connect(clientId.c_str(), mqtt_user, mqtt_pass, willTopic, willQoS, willRetain, willMessage);
-  } else {
-    isConnected = client.connect(clientId.c_str(), willTopic, willQoS, willRetain, willMessage);
-  }
-
-  if (isConnected) {
-    Serial.println("Thanh cong!");
-    client.subscribe("esp32/led1/control");
-    client.subscribe("esp32/led2/control");
-    client.subscribe("esp32/led_all/control");
-
-    String connectMsg = "STATUS: ONLINE | IP: " + WiFi.localIP().toString();
-    client.publish(status_topic, connectMsg.c_str(), true);
-
-    // Báo cáo trạng thái thực tế ngay khi vừa khởi động
-    client.publish("esp32/led1/status", digitalRead(LED1_PIN) ? "ON" : "OFF", true);
-    client.publish("esp32/led2/status", digitalRead(LED2_PIN) ? "ON" : "OFF", true);
-
-  } else {
-    Serial.print("That bai! Ma loi rc=");
-    Serial.println(client.state());
-  }
-  return client.connected();
+  publishAlertCounts();
 }
 
-// ==========================================
-// 6. SETUP
-// ==========================================
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-
-  pinMode(LED1_PIN, OUTPUT);
-  pinMode(LED2_PIN, OUTPUT);
-  pinMode(WIND_WARNING_LED_PIN, OUTPUT);
-  digitalWrite(WIND_WARNING_LED_PIN, LOW);
-  randomSeed(esp_random());
-  xTaskCreate(windWarningTask, "wind-warning", 2048, nullptr, 1, nullptr);
-  digitalWrite(LED1_PIN, LOW);
-  digitalWrite(LED2_PIN, LOW);
-
+  preferences.begin("iot-thresholds", false);
+  for (int i = 0; i < 3; i++) {
+    // On first boot the key is absent; keep the default without a failed read.
+    if (preferences.isKey(KEYS[i])) {
+      float saved = preferences.getFloat(KEYS[i], thresholds[i]);
+      if (isfinite(saved) && saved >= 0 && saved <= LIMITS[i]) thresholds[i] = saved;
+    }
+    pinMode(LED_PINS[i], OUTPUT);
+    digitalWrite(LED_PINS[i], LOW);
+  }
+  analogReadResolution(12);
   pinMode(LDRPIN, INPUT);
-  analogReadResolution(LIGHT_ADC_BITS);
   pinMode(DHTPIN, INPUT_PULLUP);
-
   dht.begin();
-  setup_wifi();
-
+  xTaskCreate(sensorTask, "sensor-led", 4096, nullptr, 1, nullptr);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(ssid, password);
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
-  client.setKeepAlive(15);
   client.setBufferSize(512);
   client.setSocketTimeout(1);
 }
 
-// ==========================================
-// 7. LOOP
-// ==========================================
 void loop() {
-  if (!client.connected()) {
-    unsigned long now = millis();
-    if (now - lastReconnectAttempt > MQTT_RECONNECT_INTERVAL_MS) {
-      lastReconnectAttempt = now;
-      if (reconnect()) {
-        lastReconnectAttempt = 0;
-      }
-    }
-  } else {
-    client.loop();
+  unsigned long current = millis();
+  if (!client.connected() && current - lastReconnect >= 2000) {
+    lastReconnect = current;
+    reconnect();
   }
-
-  unsigned long now = millis();
-  if (now - lastMsg > SENSOR_PUBLISH_INTERVAL_MS) {
-    lastMsg = now;
-
-    // Module LDR có ADC giảm khi sáng: đảo về chiều sáng tăng, che giảm.
-    int anh_sang = LIGHT_ADC_MAX - analogRead(LDRPIN);
-    float do_am = dht.readHumidity();
-    float nhiet_do = dht.readTemperature();
-
-    String payload = "";
-    if (isnan(do_am) || isnan(nhiet_do)) {
-      payload = "{\"error\": \"Loi doc DHT11!\", \"light\": " + String(anh_sang) + "}";
-    } else {
-      payload = "{\"light\":" + String(anh_sang) +
-                ", \"temperature\":" + String(nhiet_do, 1) +
-                ", \"humidity\":" + String(do_am, 1) + "}";
+  if (client.connected()) client.loop();
+  if (current - lastPublish >= 2000) {
+    lastPublish = current;
+    float values[3];
+    portENTER_CRITICAL(&stateMux);
+    for (int i = 0; i < 3; i++) values[i] = readings[i];
+    portEXIT_CRITICAL(&stateMux);
+    String payload = "{";
+    for (int i = 0; i < 3; i++) {
+      if (!isnan(values[i])) payload += "\"" + String(KEYS[i]) + "\":" + String(values[i], 1) + ",";
     }
-
-    payload.remove(payload.length() - 1);
-    payload += ", \"windSpeed\":" + String(windSpeed) + "}";
+    if (isnan(values[0]) || isnan(values[1])) payload += "\"error\":\"Loi doc DHT11!\",";
+    if (payload.endsWith(",")) payload.remove(payload.length() - 1);
+    payload += "}";
     Serial.println(payload);
-
     if (client.connected()) {
       client.publish("esp32/sensor/data", payload.c_str());
+      publishAlertCounts();
     }
   }
+  delay(5);
 }

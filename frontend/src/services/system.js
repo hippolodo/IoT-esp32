@@ -4,7 +4,7 @@ import { api, websocketUrl, getAccessToken, expireSession } from './api.js'
 const SYSTEM_REFRESH_MS = 5000
 const WEBSOCKET_RETRY_MS = 3000
 const MAX_CHART_POINTS = 30
-const SENSOR_KEYS = ['temperature', 'humidity', 'light', 'windSpeed']
+const SENSOR_KEYS = ['temperature', 'humidity', 'light']
 
 export const system = reactive({
   backendOnline: false,
@@ -21,6 +21,9 @@ export const system = reactive({
   controlError: '',
   sending: {},
   sendingAll: false,
+  thresholds: {},
+  thresholdConfirmed: {},
+  alertCounts: {},
 })
 const listeners = new Set()
 let socket,
@@ -99,16 +102,20 @@ export async function refreshSystem() {
   refreshing = true
   try {
     const revision = eventRevision
-    const [status, , latest] = await Promise.all([
+    const [status, , latest, thresholds, alertCounts] = await Promise.all([
       api('/api/system/status'),
       refreshDevices(),
       api('/api/sensors/latest'),
+      api('/api/thresholds'),
+      api('/api/alert-counts'),
     ])
     if (!running) return
     Object.assign(system, { backendOnline: true, error: '' })
     if (revision === eventRevision) Object.assign(system, status)
+    if (revision === eventRevision) applyThresholds(thresholds)
+    if (revision === eventRevision) system.alertCounts = alertCounts
     latest.forEach((row) => sensorValues({
-      [row.sensorType === 'WIND_SPEED' ? 'windSpeed' : row.sensorType.toLowerCase()]: row.value,
+      [row.sensorType.toLowerCase()]: row.value,
     }, row.recordedAt))
   } catch (error) {
     if (running)
@@ -149,15 +156,14 @@ function connect() {
     if (event.topic === '/topic/sensors') {
       const time = event.recordedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
       sensorValues(event.data, time)
-      const warningDevice = system.devices.find((device) => device.type === 'WIND_WARNING')
-      if (warningDevice && typeof event.data.windSpeed === 'number') {
-        warningDevice.status = Number(event.data.windSpeed > 300)
-        warningDevice.updatedAt = time
-      }
       system.sensorError = event.data.error || ''
       system.esp32Online = true
       system.mqttConnected = true
       system.points = mergeChartPoints(system.points, [{ time, ...event.data }])
+    } else if (event.topic === '/topic/thresholds') {
+      applyThresholds(event.data)
+    } else if (event.topic === '/topic/alert-counts') {
+      system.alertCounts = event.data
     } else if (event.topic === '/topic/device-status') {
       const device = system.devices.find((row) => row.id === event.data.deviceId)
       if (device && event.data.status != null) device.status = event.data.status
@@ -228,7 +234,7 @@ export async function toggleDevice(device) {
 }
 
 export async function controlAllDevices(status) {
-  const devices = system.devices.filter((device) => device.type !== 'WIND_WARNING' && device.controllable)
+  const devices = system.devices.filter((device) => device.controllable)
   if (
     ![0, 1].includes(status) ||
     system.sendingAll ||
@@ -265,4 +271,13 @@ export async function controlAllDevices(status) {
     targets.forEach((device) => { delete system.sending[device.id] })
     system.sendingAll = false
   }
+}
+
+function applyThresholds(data) {
+  system.thresholds = data.values
+  system.thresholdConfirmed = data.confirmed
+}
+
+export async function saveThresholds(values) {
+  applyThresholds(await api('/api/thresholds', { method: 'POST', body: JSON.stringify(values) }))
 }

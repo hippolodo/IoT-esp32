@@ -55,7 +55,6 @@ const navigation = [
   { view: 'dashboard', label: 'Home Dashboard', icon: 'fa-solid fa-border-all' },
   { view: 'sensors', label: 'Data Sensors', icon: 'fa-solid fa-server' },
   { view: 'history', label: 'Action History', icon: 'fa-solid fa-clock-rotate-left' },
-  { view: 'windAlerts', label: 'Cảnh báo tốc độ gió', icon: 'fa-solid fa-wind' },
   { view: 'profile', label: 'User Profile', icon: 'fa-regular fa-user' },
 ]
 </script>

@@ -24,7 +24,6 @@
               <option value="TEMPERATURE">Nhiệt độ (Temperature)</option>
               <option value="HUMIDITY">Độ ẩm (Humidity)</option>
               <option value="LIGHT">Ánh sáng (Light)</option>
-              <option value="WIND_SPEED">Tốc độ gió (Wind Speed)</option>
               <option value="TIME">Thời gian</option>
             </select>
             <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-500">
@@ -214,7 +213,6 @@ const styles = {
   TEMPERATURE: ['fa-temperature-half', 'bg-red-100 text-red-600 border-red-200/50'],
   HUMIDITY: ['fa-droplet', 'bg-blue-100 text-blue-600 border-blue-200/50'],
   LIGHT: ['fa-sun', 'bg-indigo-100 text-indigo-600 border-indigo-200/50'],
-  WIND_SPEED: ['fa-wind', 'bg-cyan-100 text-cyan-700 border-cyan-200/50'],
 }
 const paginatedData = computed(() =>
   rows.value.map((row) => {

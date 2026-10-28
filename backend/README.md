@@ -44,7 +44,7 @@ CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 ## Database cũ
 
 BE dùng database đã chuẩn bị sẵn: `users`, `devices`, `sensors`, `datasensors`,
-`histories`, `auth_sessions`, `WindSpeed`, với đầy đủ cột theo `app/models/`.
+`histories`, `auth_sessions`, với đầy đủ cột theo `app/models/`.
 Startup không tạo bảng, không sửa schema và không thêm dữ liệu mặc định.
 Nếu thay đổi cấu trúc database, thực hiện riêng bằng SQL/migration trước khi chạy BE.
 Dữ liệu hiện có được giữ nguyên; các API/MQTT tiếp tục đọc và ghi theo nghiệp vụ.
@@ -101,6 +101,7 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | GET | `/api/user/profile` | |
 | GET | `/api/devices` | |
 | GET | `/api/devices/{id}` | |
+| GET | `/api/alert-counts` | Số đợt cảnh báo theo device ID; null nếu chưa nhận từ ESP32 |
 | POST | `/api/devices/control` | `{"deviceId":1,"status":1}` (0=OFF, 1=ON) |
 | GET | `/api/sensors` | |
 | GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
@@ -109,18 +110,21 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | GET | `/api/sensors/filter` | Bắt buộc `type,startDate,endDate`; `page,size` tùy chọn |
 | GET | `/api/history` | `deviceId,status,startTime,endTime,page,size` tùy chọn |
 | GET | `/api/history/filter` | Bắt buộc `deviceId,status`; thời gian/phân trang tùy chọn |
-| GET | `/api/alerts/wind/summary` | Bắt buộc `month=YYYY-MM`; trả tổng tháng và số đợt cảnh báo từng ngày |
-| GET | `/api/alerts/wind` | Bắt buộc `date=YYYY-MM-DD`; `page,size` tùy chọn; chi tiết các đợt cảnh báo trong ngày |
+| GET | `/api/thresholds` | Trả `values` và `confirmed` cho ba ngưỡng |
+| POST | `/api/thresholds` | `{"temperature":35,"humidity":80,"light":3000}` |
 
-Tốc độ gió giả lập từ ESP32 có `sensorType=WIND_SPEED`, MQTT key `windSpeed`,
-đơn vị `m/s`, khoảng 0–500. Dùng `/api/sensors/data?sensorType=WIND_SPEED` để lọc.
-Backend lưu cảnh báo khi bắt đầu đợt vượt 300 m/s (không đếm mỗi lần LED nháy).
-Xem [hướng dẫn tốc độ gió và cảnh báo](../docs/WIND_SPEED.md).
-
-Action History có bộ lọc **Đèn cảnh báo**, gọi `/api/history?deviceType=WIND_WARNING`.
-API đọc các đợt cảnh báo từ `WindSpeed`, hỗ trợ thời gian, phân trang và `sort`.
-Mỗi dòng có `action=ALERT`, `status=RECORDED` (đã ghi nhận), `userId=null`
-và tốc độ gió. Đây là cảnh báo tự động, không phải phản hồi xác nhận bật/tắt đèn.
+Ba ngưỡng tương ứng LED1 nhiệt độ GPIO2, LED2 độ ẩm GPIO5, LED3 ánh sáng GPIO18.
+Khoảng hợp lệ: nhiệt độ 0–50 °C (DHT11), độ ẩm 0–100 %, ánh sáng 0–4095 ADC.
+POST gửi cấu hình retained qua `esp32/thresholds/{key}/control`;
+`confirmed=true` chỉ sau phản hồi giá trị phù hợp qua topic `/status` từ ESP32.
+Nếu mất broker, POST trả 503. ESP32 lưu ngưỡng trong NVS, nháy đèn khi giá trị
+lớn hơn ngưỡng và trở lại trạng thái thủ công khi hết vượt ngưỡng.
+ACK `ON/OFF` của đèn xác nhận trạng thái công tắc thủ công, không phải nhịp nháy.
+Bộ đếm nhận tổng số từ topic retained `esp32/leds/alert-counts`, ánh xạ led1/2/3
+qua `MQTT_DEVICE_MAP` rồi phát `/topic/alert-counts`. Bản tin lặp không cộng thêm;
+ESP32 reset thì số đếm về 0. Số đếm trong RAM, không lưu lịch sử vào database.
+Với database cũ, chạy `python migrate_live_code.py` sau khi cấu hình đủ ba LED
+trong `MQTT_DEVICE_MAP`; script chỉ cập nhật danh mục đèn, giữ dữ liệu đo cũ.
 
 Response vẫn có `success,message,data,code`. Thuộc tính camelCase, chuỗi thời gian
 DTO `yyyy-MM-dd HH:mm:ss`, phân trang có `content,totalElements,totalPages,number,size,
@@ -150,7 +154,7 @@ MQTT_HOST=127.0.0.1
 MQTT_PORT=1884
 MQTT_USERNAME=B23DCCN294
 MQTT_PASSWORD=<mat-khau-da-cau-hinh>
-MQTT_DEVICE_MAP={"1":"led1","2":"led2"}
+MQTT_DEVICE_MAP={"1":"led1","2":"led2","3":"led3"}
 ```
 
 Key trong `MQTT_DEVICE_MAP` là **ID thật trong MySQL**, value là LED trong firmware.
@@ -206,7 +210,7 @@ hoặc hết hạn sẽ ngắt kết nối, FE xóa token và quay về đăng n
 Có thể lọc một kênh bằng `/ws?topic=/topic/sensors` sau khi xác thực.
 
 ```json
-{"topic":"/topic/sensors","recordedAt":"2026-10-21 12:00:00","data":{"temperature":28.5,"humidity":65,"light":1500,"windSpeed":350}}
+{"topic":"/topic/sensors","recordedAt":"2026-10-21 12:00:00","data":{"temperature":28.5,"humidity":65,"light":1500}}
 ```
 
 ```json

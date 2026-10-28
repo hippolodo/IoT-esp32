@@ -17,7 +17,6 @@ def history(
     size: int = 10,
     action: str | None = None,
     sort: str = 'desc',
-    deviceType: str | None = None,
     db: Session = Depends(database),
 ):
     result = service.history(
@@ -29,13 +28,9 @@ def history(
         size=size,
         action=action,
         sort=sort,
-        deviceType=deviceType,
         db=db,
     )
-    return envelope(
-        result,
-        'Lấy lịch sử cảnh báo thành công' if deviceType is not None else 'Lấy lịch sử thành công',
-    )
+    return envelope(result, 'Lấy lịch sử thành công')
 
 
 @router.get('/api/history/filter', tags=['Lịch sử'], dependencies=[Depends(current_session)])

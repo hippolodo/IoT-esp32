@@ -1,6 +1,6 @@
 # Cấu trúc backend
 
-Backend giữ nguyên 18 REST API, WebSocket `/ws`, định dạng JSON và tên bảng DB.
+Backend cung cấp REST API, WebSocket `/ws` và dữ liệu JSON cho hệ thống 3 cảm biến, 3 đèn.
 Điểm chạy vẫn là `app.main:app`; frontend không cần thay URL.
 
 ```text
@@ -10,7 +10,7 @@ app/
 ├── database.py              # Engine và session factory
 ├── dependencies.py          # DB, người đăng nhập, MQTT, cấu hình của từng app
 ├── contracts.py             # Envelope, serializer, phân trang, thời gian Việt Nam
-├── schemas.py               # LoginRequest, RegisterRequest, DeviceControlRequest
+├── schemas.py               # Schema tài khoản, điều khiển đèn và ThresholdRequest
 ├── passwords.py             # Băm và kiểm tra mật khẩu
 ├── models/
 │   └── __init__.py          # Các model SQLAlchemy và quan hệ giữa bảng
@@ -18,8 +18,8 @@ app/
 │   ├── auth.py              # Đăng ký, đăng nhập, đăng xuất, hồ sơ
 │   ├── devices.py           # Danh sách, chi tiết, điều khiển đèn
 │   ├── sensors.py           # Danh mục, số đo, lịch sử biểu đồ, lọc
-│   ├── history.py           # Lịch sử điều khiển/cảnh báo
-│   ├── alerts.py            # Thống kê tháng và cảnh báo từng ngày
+│   ├── history.py           # Lịch sử điều khiển đèn
+│   ├── thresholds.py        # Đọc, cấu hình và xác nhận 3 ngưỡng
 │   ├── system.py            # Health và trạng thái kết nối
 │   └── realtime.py          # Xác thực và truyền sự kiện WebSocket
 └── services/
@@ -27,8 +27,7 @@ app/
     ├── devices.py           # Truy vấn thiết bị, chuyển yêu cầu điều khiển
     ├── sensors.py           # Truy vấn và ghép dữ liệu cảm biến/biểu đồ
     ├── history.py           # Lọc, sắp xếp, phân trang lịch sử
-    ├── alerts.py            # Truy vấn thống kê cảnh báo gió
-    └── mqtt.py              # MQTT, ACK, timeout, lưu số đo/cảnh báo, EventHub
+    └── mqtt.py              # MQTT, ACK, timeout, lưu số đo, xác nhận ngưỡng, EventHub
 ```
 
 ## Trách nhiệm từng lớp

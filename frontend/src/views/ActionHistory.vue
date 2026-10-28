@@ -4,7 +4,7 @@
       <div>
         <h2 class="text-2xl font-bold text-[#1a1d2e]">Lịch Sử Thao Tác Thiết Bị</h2>
         <p class="text-sm text-gray-500 mt-1">
-          Tra cứu thao tác bật/tắt đèn và các đợt cảnh báo tốc độ gió tự động
+          Tra cứu thao tác bật/tắt của 3 đèn
         </p>
       </div>
       <ConnectionStatus />
@@ -25,7 +25,7 @@
               class="block w-full pl-4 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white font-medium text-gray-700"
             >
               <option value="all">Tất cả thiết bị</option>
-              <option v-for="device in system.devices" :key="device.id" :value="device.type === 'WIND_WARNING' ? 'wind-warning' : device.id">
+              <option v-for="device in system.devices" :key="device.id" :value="device.id">
                 {{ device.name }}
               </option>
             </select>
@@ -45,12 +45,9 @@
               class="block w-full pl-4 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white font-medium text-gray-700"
             >
               <option value="all">Tất cả trạng thái</option>
-              <option v-if="searchDevice === 'wind-warning'" value="RECORDED">Đã ghi nhận</option>
-              <template v-else>
-                <option value="SUCCESS">Success</option>
-                <option value="FAILED">Failed</option>
-                <option value="PENDING">PENDING</option>
-              </template>
+              <option value="SUCCESS">SUCCESS</option>
+              <option value="FAILED">FAILED</option>
+              <option value="PENDING">PENDING</option>
             </select>
             <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
               <i class="fa-solid fa-chevron-down text-xs"></i>
@@ -67,11 +64,8 @@
               class="block w-full pl-4 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg focus:ring-blue-500 focus:border-blue-500 appearance-none bg-white font-medium text-gray-700"
             >
               <option value="all">Tất cả hành động</option>
-              <option v-if="searchDevice === 'wind-warning'" value="ALERT">CẢNH BÁO</option>
-              <template v-else>
-                <option value="ON">BẬT (ON)</option>
-                <option value="OFF">TẮT (OFF)</option>
-              </template>
+              <option value="ON">BẬT (ON)</option>
+              <option value="OFF">TẮT (OFF)</option>
             </select>
             <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
               <i class="fa-solid fa-chevron-down text-xs"></i>
@@ -313,8 +307,7 @@ const {
 } = usePage(
   '/api/history',
   () => ({
-    deviceId: ['all', 'wind-warning'].includes(applied.value.device) ? undefined : applied.value.device,
-    deviceType: applied.value.device === 'wind-warning' ? 'WIND_WARNING' : undefined,
+    deviceId: applied.value.device === 'all' ? undefined : applied.value.device,
     status: applied.value.status === 'all' ? undefined : applied.value.status,
     action: applied.value.action === 'all' ? undefined : applied.value.action,
     startTime: applied.value.time,
@@ -325,24 +318,23 @@ const {
 )
 const paginatedData = computed(() =>
   rows.value.map((row) => {
-    const isWarning = row.eventType === 'WIND_WARNING'
     const isOn = row.action === 'ON',
       success = row.status === 'SUCCESS'
     const device = system.devices.find((device) => device.id === row.deviceId)
     return {
-      id: isWarning ? `#WIND-${row.id}` : `#LOG-${row.id}`,
-      userId: isWarning ? 'Tự động' : row.userId ?? '—',
+      id: `#LOG-${row.id}`,
+      userId: row.userId ?? '—',
       deviceName: row.deviceName,
-      gpio: isWarning ? 'GPIO 18' : device ? `GPIO ${device.controlPin ?? device.pinGpio ?? '—'}` : '—',
-      isIconActive: isWarning || (success && isOn),
-      action: isWarning ? 'CẢNH BÁO' : isOn ? 'BẬT (ON)' : 'TẮT (OFF)',
-      actionClass: isWarning ? 'text-red-600' : isOn ? 'text-emerald-500' : 'text-gray-400',
-      execStatus: isWarning ? 'Đã ghi nhận' : row.status,
-      execStatusColor: isWarning ? 'bg-amber-500' : row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
+      gpio: device ? `GPIO ${device.controlPin ?? device.pinGpio ?? '—'}` : '—',
+      isIconActive: (success && isOn),
+      action: isOn ? 'BẬT (ON)' : 'TẮT (OFF)',
+      actionClass: isOn ? 'text-emerald-500' : 'text-gray-400',
+      execStatus: row.status,
+      execStatusColor: row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
       execStatusTextClass:
-        isWarning || row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
-      deviceStatus: isWarning ? `Gió ${row.speed} m/s` : success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
-      deviceStatusColor: isWarning ? 'bg-red-500' : success ? 'bg-emerald-500' : 'bg-gray-300',
+        row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
+      deviceStatus: success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
+      deviceStatusColor: success ? 'bg-emerald-500' : 'bg-gray-300',
       timestamp: row.timestamp,
       date: row.timestamp.split(' ')[0],
       time: row.timestamp.split(' ')[1] || '',

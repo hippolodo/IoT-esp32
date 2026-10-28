@@ -37,7 +37,6 @@ def test_startup_does_not_add_or_rewrite_catalog_data(tmp_path):
     prepare_test_database(app)
     with app.state.sessions.begin() as db:
         db.delete(db.get(Device, 3))
-        db.delete(db.get(Sensor, 4))
         db.get(User, 1).full_name = 'Existing user'
     with TestClient(app) as client:
         assert client.get('/api/auth/health').status_code == 200
@@ -156,7 +155,7 @@ def test_swagger_declares_bearer_auth_for_protected_routes(client):
 
 
 PROTECTED_GETS = [
-    '/api/system/status', '/api/user/profile', '/api/devices', '/api/devices/1',
+    '/api/system/status', '/api/user/profile', '/api/devices', '/api/devices/1', '/api/alert-counts',
     '/api/sensors', '/api/sensors/latest', '/api/sensors/data',
     '/api/sensors/filter?type=LIGHT&startDate=2026-10-21&endDate=2026-10-21',
     '/api/history', '/api/history/filter?deviceId=1&status=SUCCESS',
@@ -259,6 +258,89 @@ def test_health_login_and_profile(client):
     assert 'passwordHash' not in profile
 
 
+def test_third_led_control_and_sensor_mapping(client, connected):
+    devices = client.get('/api/devices').json()['data']
+    assert [row['sensorKey'] for row in devices] == ['temperature', 'humidity', 'light']
+    assert all(row['controllable'] for row in devices)
+    assert devices[2]['controlPin'] == 18
+    assert client.post('/api/devices/control', json={'deviceId': 3, 'status': 1}).status_code == 200
+    connected.client.publish.assert_called_with('esp32/led3/control', 'ON', qos=1, retain=False)
+    connected.handle_message('esp32/led3/status', 'ON')
+    assert client.get('/api/devices/3').json()['data']['status'] == 1
+    assert client.get('/api/history').json()['data']['content'][0]['status'] == 'SUCCESS'
+
+
+def test_alert_counts_snapshots_duplicates_reboot_and_retained(client, connected):
+    assert client.get('/api/alert-counts').json()['data'] == {'1': None, '2': None, '3': None}
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":5,"led2":0,"led3":12}', retained=True)
+    assert client.get('/api/alert-counts').json()['data'] == {'1': 5, '2': 0, '3': 12}
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":5,"led2":0,"led3":12}')
+    assert client.get('/api/alert-counts').json()['data']['3'] == 12
+    connected.handle_message('esp32/led1/status', 'ON')
+    connected.handle_message('esp32/led1/status', 'OFF')
+    assert client.get('/api/alert-counts').json()['data']['1'] == 5
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    assert client.get('/api/alert-counts').json()['data'] == {'1': 0, '2': 0, '3': 0}
+    assert client.get('/api/history').json()['data']['totalElements'] == 0
+
+
+@pytest.mark.parametrize('payload', [
+    '[]', '{"led1":1}', '{"led1":true,"led2":0,"led3":0}',
+    '{"led1":-1,"led2":0,"led3":0}', '{"led1":1.5,"led2":0,"led3":0}',
+    '{"led1":4294967296,"led2":0,"led3":0}',
+])
+def test_invalid_alert_counts_do_not_overwrite_snapshot(client, payload):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":2,"led2":3,"led3":4}')
+    with pytest.raises(ValueError):
+        service.handle_message('esp32/leds/alert-counts', payload)
+    assert client.get('/api/alert-counts').json()['data'] == {'1': 2, '2': 3, '3': 4}
+
+
+def test_alert_counts_websocket_and_custom_device_map(client):
+    service = client.app.state.mqtt
+    service.settings.device_map = {9: 'led3', 7: 'led1'}
+    token = client.headers['Authorization'].split()[1]
+    with client.websocket_connect('/ws') as ws:
+        ws.send_json({'type': 'auth', 'token': token})
+        assert ws.receive_json()['type'] == 'authenticated'
+        service.handle_message('esp32/leds/alert-counts', '{"led1":8,"led2":0,"led3":20}')
+        event = ws.receive_json()
+        assert event == {'topic': '/topic/alert-counts', 'data': {'9': 20, '7': 8}}
+    assert client.get('/api/alert-counts').json()['data'] == {'9': 20, '7': 8}
+
+
+def test_threshold_commands_wait_for_matching_confirmation(client, connected):
+    values = {'temperature': 30, 'humidity': 75, 'light': 2000}
+    result = client.post('/api/thresholds', json=values)
+    assert result.status_code == 200
+    assert not any(result.json()['data']['confirmed'].values())
+    for key, value in values.items():
+        connected.client.publish.assert_any_call(f'esp32/thresholds/{key}/control', str(float(value)), qos=1, retain=True)
+    connected.handle_message('esp32/thresholds/temperature/status', '35', retained=True)
+    assert connected.thresholds['temperature'] == 30
+    assert not connected.threshold_confirmed['temperature']
+    for key, value in values.items():
+        connected.handle_message(f'esp32/thresholds/{key}/status', str(value))
+    assert all(client.get('/api/thresholds').json()['data']['confirmed'].values())
+
+
+@pytest.mark.parametrize('key,value', [('temperature', -1), ('temperature', 51), ('humidity', 101),
+                                     ('light', 4096), ('humidity', True), ('light', None)])
+def test_threshold_validation(client, connected, key, value):
+    values = {'temperature': 35, 'humidity': 80, 'light': 3000, key: value}
+    assert client.post('/api/thresholds', json=values).status_code == 400
+    connected.client.publish.assert_not_called()
+
+
+def test_threshold_offline_authentication(client):
+    values = {'temperature': 35, 'humidity': 80, 'light': 3000}
+    assert client.post('/api/thresholds', json=values).status_code == 503
+    client.headers.pop('Authorization')
+    assert client.get('/api/thresholds').status_code == 401
+    assert client.post('/api/thresholds', json=values).status_code == 401
+
+
 def test_devices_and_validation(client):
     devices = client.get('/api/devices').json()['data']
     assert [d['pinGpio'] for d in devices] == [2, 5, 18]
@@ -276,7 +358,7 @@ def test_sensor_ingestion_and_pagination(client):
     mqtt.handle_message('esp32/sensor/data', '{"temperature":28.5,"humidity":65,"light":1500}')
     mqtt.handle_message('esp32/sensor/data', '{"error":"DHT error","light":1600}')
     sensors = client.get('/api/sensors').json()['data']
-    assert [s['mqttKey'] for s in sensors] == ['temperature', 'humidity', 'light', 'windSpeed']
+    assert [s['mqttKey'] for s in sensors] == ['temperature', 'humidity', 'light']
     latest = client.get('/api/sensors/latest').json()['data']
     assert len(latest) == 3
     assert next(row for row in latest if row['sensorType'] == 'LIGHT')['value'] == 1600
@@ -422,6 +504,7 @@ def test_reconnect_resubscribes_and_invalid_sensor_values(client):
     fake = Mock()
     service._on_connect(fake, None, None, SimpleNamespace(is_failure=False), None)
     topics = dict(fake.subscribe.call_args.args[0])
+    assert topics['esp32/leds/alert-counts'] == 1
     assert topics['esp32/sensor/data'] == 1 and topics['esp32/led2/status'] == 1
     service.handle_message('esp32/sensor/data', '{"light":true,"temperature":NaN,"humidity":"bad"}')
     assert client.get('/api/sensors/data').json()['data']['totalElements'] == 0
@@ -553,13 +636,13 @@ def test_chart_history_latest_30_times_all_sensors_and_partial_readings(client):
     start = datetime(2026, 10, 21, 12)
     with client.app.state.sessions.begin() as db:
         for index in range(35):
-            for sensor_id in range(1, 5):
+            for sensor_id in range(1, 4):
                 if index == 34 and sensor_id == 1:
                     continue  # A DHT error must not turn into a fabricated zero.
                 db.add(DataSensor(sensor_id=sensor_id, value=index * 10 + sensor_id,
                                   recorded_at=start + timedelta(seconds=index * 2, microseconds=sensor_id * 100)))
         # If multiple values exist in one second, keep the last recorded value.
-        db.add(DataSensor(sensor_id=4, value=450, recorded_at=start + timedelta(seconds=68, microseconds=900)))
+        db.add(DataSensor(sensor_id=3, value=450, recorded_at=start + timedelta(seconds=68, microseconds=900)))
         other = Sensor(name='Unknown sensor', type='UNKNOWN', mqtt_key='unknown')
         db.add(other)
         db.flush()
@@ -568,7 +651,7 @@ def test_chart_history_latest_30_times_all_sensors_and_partial_readings(client):
     assert response.status_code == 200
     points = response.json()['data']
     assert len(points) == 30
-    assert points[0] == {'time': '2026-10-21 12:00:10', 'temperature': 51, 'humidity': 52, 'light': 53, 'windSpeed': 54}
-    assert points[-1] == {'time': '2026-10-21 12:01:08', 'humidity': 342, 'light': 343, 'windSpeed': 450}
+    assert points[0] == {'time': '2026-10-21 12:00:10', 'temperature': 51, 'humidity': 52, 'light': 53}
+    assert points[-1] == {'time': '2026-10-21 12:01:08', 'humidity': 342, 'light': 450}
     assert [point['time'] for point in points] == sorted(point['time'] for point in points)
     assert client.get('/api/sensors/chart?limit=2').json()['data'] == points[-2:]

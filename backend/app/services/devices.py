@@ -7,9 +7,10 @@ from .mqtt import MqttService
 
 def device_response(row, db: Session, settings):
     result = device_dict(row)
-    led = settings.device_map.get(row['id']) if row['device_type'] != "WIND_WARNING" else None
+    led = settings.device_map.get(row['id'])
+    result["sensorKey"] = {"led1": "temperature", "led2": "humidity", "led3": "light"}.get(led)
     result["controllable"] = led is not None
-    result["controlPin"] = {"led1": 2, "led2": 5}.get(led)
+    result["controlPin"] = {"led1": 2, "led2": 5, "led3": 18}.get(led)
     result["pending"] = execute_sql(db, """
         SELECT id FROM histories
         WHERE device_id = :device_id AND status = 'PENDING' LIMIT 1

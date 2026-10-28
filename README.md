@@ -2,9 +2,24 @@
 
 Dự án giám sát nhiệt độ, độ ẩm, ánh sáng và điều khiển đèn bằng ESP32.
 
-Bổ sung tốc độ gió giả lập 0–500 m/s trên ESP32, LED tự cảnh báo GPIO18 khi vượt
-300 m/s, bộ lọc WIND_SPEED và thống kê đợt cảnh báo theo tháng/ngày.
-Xem [hướng dẫn tốc độ gió](docs/WIND_SPEED.md) để nối mạch và chạy chức năng mới.
+Đề live code: 3 đèn bật/tắt độc lập và 3 ngưỡng chỉnh trên dashboard.
+Đèn 1 (GPIO2) ứng với nhiệt độ, đèn 2 (GPIO5) độ ẩm, đèn 3 (GPIO18) ánh sáng.
+Khi giá trị **lớn hơn** ngưỡng, đèn tương ứng nháy mỗi 500 ms, ưu tiên hơn công tắc.
+Khi giá trị về ngưỡng hoặc thấp hơn, đèn trở về trạng thái bật/tắt đã chọn.
+Ngưỡng mặc định: 35 °C, 80 %, 3000 ADC. ESP32 lưu ngưỡng trong NVS và đọc cảm biến
+mỗi 2 giây, tiếp tục cảnh báo khi mất mạng. DHT lỗi thì ngừng cảnh báo nhiệt độ/độ ẩm.
+
+Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Mỗi đợt vượt ngưỡng tính
+1 lần, không tăng theo từng nhịp nháy. Giá trị về ngưỡng hoặc thấp hơn rồi vượt
+lại mới tính đợt mới; bật/tắt thủ công không tăng số đếm. Bộ đếm cộng dồn từ khi
+ESP32 khởi động và về 0 khi reset/mất điện. Mất mạng vẫn đếm, kết nối lại sẽ
+gửi số mới nhất. Số đếm cập nhật mỗi 2 giây qua MQTT retained và WebSocket;
+tải lại trang lấy số gần nhất qua `GET /api/alert-counts`.
+Mất dữ liệu DHT tạm thời không tách một đợt cảnh báo thành nhiều đợt.
+
+Với database cũ, cấu hình `MQTT_DEVICE_MAP={"1":"led1","2":"led2","3":"led3"}`
+trong `backend/.env`, rồi chạy `backend/.venv/Scripts/python.exe backend/migrate_live_code.py`
+từ thư mục gốc để cập nhật danh mục đèn. Cần **nạp lại firmware** sau khi đổi đề.
 
 Dashboard tự lấy 30 mốc thời gian gần nhất từ database qua `/api/sensors/chart`
 khi mở/tải lại trang, kể cả khi ESP32 offline (backend và database cần hoạt động).
@@ -22,7 +37,7 @@ ESP32 và backend trao đổi dữ liệu qua MQTT broker Mosquitto; dữ liệu
 | Backend FastAPI | Có REST API, lưu dữ liệu cảm biến, xử lý MQTT, lịch sử và WebSocket |
 | MySQL | Đã kiểm tra đọc dữ liệu từ database hiện có qua API |
 | Frontend Vue | Đã nối REST API/WebSocket: dashboard, cảm biến, lịch sử và hồ sơ |
-| Kiểm thử | 95 kiểm thử backend và 7 kiểm thử frontend đã đạt |
+| Kiểm thử | Kiểm thử API/MQTT/WebSocket và frontend; kiểm tra thêm xác nhận ngưỡng và đèn thứ 3 |
 | Realtime từ mạch thật | Đã nhận dữ liệu MQTT qua FastAPI và WebSocket proxy của Vite |
 
 Dashboard hiển thị giá trị đo thật, chờ ESP32 xác nhận lệnh trước khi đổi trạng thái
@@ -41,7 +56,7 @@ flowchart LR
 
 ## Công nghệ
 
-- **Phần cứng:** ESP32, DHT11, cảm biến ánh sáng LDR và 2 LED.
+- **Phần cứng:** ESP32, DHT11, cảm biến ánh sáng LDR và 3 LED.
 - **Firmware:** Arduino framework, PubSubClient, DHT sensor library, Adafruit Unified Sensor.
 - **Backend:** FastAPI, Uvicorn, SQLAlchemy, PyMySQL, Paho MQTT.
 - **Frontend:** Vue 3, Vite, Tailwind CSS 4, Chart.js, vue-chartjs.
@@ -119,7 +134,7 @@ MQTT_PORT=1884
 MQTT_USERNAME=YOUR_MQTT_USERNAME
 MQTT_PASSWORD=YOUR_MQTT_PASSWORD
 MQTT_SENSOR_TOPIC=esp32/sensor/data
-MQTT_DEVICE_MAP={"1":"led1","2":"led2"}
+MQTT_DEVICE_MAP={"1":"led1","2":"led2","3":"led3"}
 COMMAND_TIMEOUT_SECONDS=15
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
@@ -196,6 +211,7 @@ phải dùng **IP LAN của máy đó**.
 | LDR — tín hiệu analog | 33 |
 | LED 1 | 2 |
 | LED 2 | 5 |
+| LED 3 | 18 |
 
 Giá trị `light` là ADC 12-bit đã đảo chiều (`4095 - analogRead(LDRPIN)`): sáng tăng, che giảm; **chưa phải lux đã hiệu chuẩn**. Cần nạp lại firmware để áp dụng; các bản ghi cũ trong database giữ nguyên giá trị trước đây.
 Nếu dùng lại database cũ, đối chiếu metadata GPIO/đơn vị với phần cứng trước khi chạy.
@@ -219,9 +235,13 @@ upload khi đã cắm mạch. Hướng dẫn Arduino IDE và xử lý IntelliSen
 | `esp32/sensor/data` | Gửi | JSON gồm `temperature`, `humidity`, `light` |
 | `esp32/led1/control` | Nhận | `ON` / `OFF` hoặc `1` / `0` |
 | `esp32/led2/control` | Nhận | `ON` / `OFF` hoặc `1` / `0` |
-| `esp32/led_all/control` | Nhận | Điều khiển đồng thời hai LED |
+| `esp32/led3/control` | Nhận | `ON` / `OFF` hoặc `1` / `0` |
+| `esp32/led_all/control` | Nhận | Điều khiển đồng thời ba LED |
 | `esp32/led1/status` | Gửi | `ON` / `OFF` / `FAIL` |
 | `esp32/led2/status` | Gửi | `ON` / `OFF` / `FAIL` |
+| `esp32/led3/status` | Gửi | `ON` / `OFF` (trạng thái công tắc) |
+| `esp32/thresholds/{key}/control` | Nhận | Số ngưỡng; retained, key là temperature/humidity/light |
+| `esp32/thresholds/{key}/status` | Gửi | Ngưỡng ESP32 đã lưu; retained |
 | `esp32/status` | Gửi | Trạng thái kết nối của mạch |
 
 Ví dụ dữ liệu cảm biến:
@@ -232,7 +252,8 @@ Ví dụ dữ liệu cảm biến:
 
 Backend ghi lệnh điều khiển ở trạng thái `PENDING`, cập nhật thành `SUCCESS` khi
 nhận ACK phù hợp, hoặc `FAILED` khi nhận FAIL/quá thời gian chờ. Mỗi thiết bị chỉ
-có một lệnh đang chờ. Đọc lại GPIO xác nhận mức logic, chưa xác nhận đèn vật lý sáng.
+có một lệnh đang chờ. ACK xác nhận trạng thái bật/tắt thủ công; đèn vật lý ưu tiên
+nháy khi vượt ngưỡng. Ngưỡng chỉ báo đã xác nhận sau khi ESP32 trả về giá trị tương ứng.
 
 ## REST API và WebSocket
 

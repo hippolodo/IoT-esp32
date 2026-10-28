@@ -11,13 +11,13 @@ MEASUREMENTS_SQL = """
 
 
 def sensors(db: Session):
-    rows = execute_sql(db, "SELECT * FROM sensors ORDER BY id ASC").mappings().all()
+    rows = execute_sql(db, "SELECT * FROM sensors WHERE UPPER(type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT') ORDER BY id ASC").mappings().all()
     return [sensor_dict(row) for row in rows]
 
 
 def latest(db: Session):
     rows = execute_sql(db, MEASUREMENTS_SQL + """
-        WHERE ds.id = (
+        WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT') AND ds.id = (
             SELECT newest.id FROM datasensors AS newest
             WHERE newest.sensor_id = s.id
             ORDER BY newest.recorded_at DESC, newest.id DESC LIMIT 1
@@ -31,8 +31,8 @@ def sensor_chart(db: Session, limit: int = 30):
     if not 1 <= limit <= 30:
         raise ValueError("limit phải từ 1 đến 30")
     keys = {'TEMPERATURE': 'temperature', 'HUMIDITY': 'humidity',
-            'LIGHT': 'light', 'WIND_SPEED': 'windSpeed'}
-    # One point per second, with up to four readings, oldest to newest.
+            'LIGHT': 'light'}
+    # One point per second, with up to three readings, oldest to newest.
     rows = execute_sql(db, """
         SELECT ds.value, s.type AS sensor_type,
                SUBSTR(CAST(ds.recorded_at AS CHAR), 1, 19) AS sample_time
@@ -43,12 +43,12 @@ def sensor_chart(db: Session, limit: int = 30):
             FROM datasensors AS d
             JOIN sensors AS sensor ON sensor.id = d.sensor_id
             WHERE d.recorded_at IS NOT NULL
-              AND UPPER(sensor.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT', 'WIND_SPEED')
+              AND UPPER(sensor.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')
             GROUP BY SUBSTR(CAST(d.recorded_at AS CHAR), 1, 19)
             ORDER BY sample_time DESC
             LIMIT :limit
         ) AS recent ON recent.sample_time = SUBSTR(CAST(ds.recorded_at AS CHAR), 1, 19)
-        WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT', 'WIND_SPEED')
+        WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')
         ORDER BY ds.recorded_at ASC, ds.id ASC
     """, {'limit': limit}).mappings().all()
     points = {}
@@ -69,7 +69,7 @@ def sensor_data(
     value: str | None = None,
 ):
     start, end = time_range(startTime, endTime)
-    sql = MEASUREMENTS_SQL + ' WHERE 1 = 1'
+    sql = MEASUREMENTS_SQL + " WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')"
     params = {}
     if sensorId is not None:
         sql += ' AND ds.sensor_id = :sensor_id'
@@ -94,7 +94,8 @@ def filter_sensors(
     if start > end:
         raise ValueError("startDate phải nhỏ hơn hoặc bằng endDate")
     sql = MEASUREMENTS_SQL + """
-        WHERE s.type = :sensor_type AND ds.recorded_at >= :start AND ds.recorded_at <= :end
+        WHERE s.type = :sensor_type AND UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')
+          AND ds.recorded_at >= :start AND ds.recorded_at <= :end
         ORDER BY ds.recorded_at DESC, ds.id DESC
     """
     return paginate(db, sql, {'sensor_type': type, 'start': start, 'end': end}, page, size, data_dict)

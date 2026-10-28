@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import Settings
 from .database import make_database
 from .contracts import register_exception_handlers
-from .routers import alerts, auth, devices, history, realtime, sensors, system
+from .routers import auth, devices, history, realtime, sensors, system, thresholds
 from .services.mqtt import EventHub, MqttService
 
 log = logging.getLogger(__name__)
@@ -53,7 +53,6 @@ def create_app(settings=None):
             {"name": "Thiết bị", "description": "Danh sách, trạng thái và điều khiển đèn."},
             {"name": "Cảm biến", "description": "Danh mục, số đo mới nhất và tra cứu dữ liệu cảm biến."},
             {"name": "Lịch sử", "description": "Tra cứu và lọc lịch sử điều khiển thiết bị."},
-            {"name": "Cảnh báo gió", "description": "Đếm đợt vượt 300 m/s theo ngày và tháng, xem chi tiết từng ngày."},
             {"name": "Hệ thống", "description": "Kiểm tra backend và trạng thái kết nối MQTT, ESP32."},
         ],
     )
@@ -69,8 +68,8 @@ def create_app(settings=None):
     app.state.registration_lock = registration_lock
     register_exception_handlers(app)
     for router in (
-        system.router, auth.router, devices.router,
-        alerts.router, sensors.router, history.router, realtime.router,
+        thresholds.router, system.router, auth.router, devices.router,
+        sensors.router, history.router, realtime.router,
     ):
         app.include_router(router)
     return app

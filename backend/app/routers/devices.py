@@ -9,6 +9,11 @@ from ..services import devices as service
 router = APIRouter()
 
 
+@router.get('/api/alert-counts', tags=['Thiết bị'], dependencies=[Depends(current_session)])
+def alert_counts(mqtt=Depends(get_mqtt)):
+    return envelope(mqtt.alert_counts_status())
+
+
 @router.get('/api/devices', tags=['Thiết bị'], dependencies=[Depends(current_session)])
 def devices(db: Session = Depends(database), settings=Depends(get_settings)):
     result = service.devices(db=db, settings=settings)

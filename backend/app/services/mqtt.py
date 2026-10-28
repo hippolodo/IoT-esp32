@@ -13,8 +13,7 @@ from ..contracts import ControlError, date_string, execute_sql, now
 log = logging.getLogger(__name__)
 ESP32_OFFLINE_TIMEOUT_SECONDS = 20
 MQTT_KEEPALIVE_SECONDS = 15
-SENSOR_KEYS = ("temperature", "humidity", "light", "windSpeed")
-WIND_ALERT_THRESHOLD = 300
+SENSOR_KEYS = ("temperature", "humidity", "light")
 
 
 class EventHub:
@@ -43,6 +42,10 @@ class MqttService:
         self.lock = threading.RLock()
         self.esp_online = None
         self.last_seen = None
+        self.thresholds = dict(temperature=35.0, humidity=80.0, light=3000.0)
+        self.threshold_confirmed = {key: False for key in SENSOR_KEYS}
+        self.threshold_pending = set()
+        self.alert_counts = {led: None for led in ("led1", "led2", "led3")}
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                                   client_id=f"iot-python-{uuid.uuid4().hex}")
         if settings.mqtt_username:
@@ -69,8 +72,9 @@ class MqttService:
         if reason_code.is_failure:
             log.error("MQTT connection rejected: %s", reason_code)
             return
-        topics = [(self.settings.sensor_topic, 1), ("esp32/status", 1)]
+        topics = [(self.settings.sensor_topic, 1), ("esp32/status", 1), ("esp32/leds/alert-counts", 1)]
         topics += [(f"esp32/{led}/status", 1) for led in self.settings.device_map.values()]
+        topics += [(f"esp32/thresholds/{key}/status", 1) for key in SENSOR_KEYS]
         client.subscribe(topics)
         log.info("MQTT connected; subscribed to %s", topics)
 
@@ -94,10 +98,31 @@ class MqttService:
         with self.lock:
             if topic == self.settings.sensor_topic:
                 self._sensor_data(payload)
+            elif topic == "esp32/leds/alert-counts":
+                counts = json.loads(payload)
+                if not isinstance(counts, dict) or any(
+                    type(counts.get(led)) is not int or not 0 <= counts[led] <= 4294967295
+                    for led in self.alert_counts
+                ):
+                    raise ValueError("Invalid LED alert counts")
+                self.alert_counts = {led: counts[led] for led in self.alert_counts}
+                self.hub.emit("/topic/alert-counts", self.alert_counts_status())
             elif topic == "esp32/status":
                 self.esp_online = "STATUS: ONLINE" in payload
                 self.last_seen = monotonic()
                 self.hub.emit("/topic/esp32-status", {"message": payload})
+            elif topic.startswith("esp32/thresholds/") and topic.endswith("/status"):
+                key = topic.split("/")[2]
+                limits = {"temperature": 50, "humidity": 100, "light": 4095}
+                if key in SENSOR_KEYS:
+                    value = float(payload)
+                    if math.isfinite(value) and 0 <= value <= limits[key]:
+                        if key in self.threshold_pending and not math.isclose(value, self.thresholds[key], abs_tol=0.0006):
+                            return
+                        self.thresholds[key] = value
+                        self.threshold_confirmed[key] = True
+                        self.threshold_pending.discard(key)
+                        self.hub.emit("/topic/thresholds", self.threshold_status())
             else:
                 for device_id, led in self.settings.device_map.items():
                     if topic == f"esp32/{led}/status":
@@ -110,40 +135,16 @@ class MqttService:
             raise ValueError("Sensor payload must be a JSON object")
         clean = {}
         recorded_at = now()
-        new_alert = None
         with self.sessions.begin() as db:
             for key in SENSOR_KEYS:
                 value = values.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                    continue
-                if key == "windSpeed" and not 0 <= value <= 500:
                     continue
                 sensor = execute_sql(db, """
                     SELECT id FROM sensors
                     WHERE mqtt_key = :mqtt_key OR type = :sensor_type LIMIT 1
                 """, {'mqtt_key': key, 'sensor_type': key.upper()}).mappings().first()
                 if sensor:
-                    if key == "windSpeed":
-                        warning_device = execute_sql(db, """
-                            SELECT id FROM devices WHERE device_type = 'WIND_WARNING' LIMIT 1
-                        """).mappings().first()
-                        if warning_device is not None:
-                            execute_sql(db, """
-                                UPDATE devices SET status = :status, updated_at = :recorded_at
-                                WHERE id = :id
-                            """, {'status': int(value > WIND_ALERT_THRESHOLD), 'recorded_at': recorded_at,
-                                  'id': warning_device['id']})
-                        previous = execute_sql(db, """
-                            SELECT value FROM datasensors WHERE sensor_id = :sensor_id
-                            ORDER BY recorded_at DESC, id DESC LIMIT 1
-                        """, {'sensor_id': sensor['id']}).mappings().first()
-                        if value > WIND_ALERT_THRESHOLD and (previous is None or previous['value'] <= WIND_ALERT_THRESHOLD):
-                            result = execute_sql(db, """
-                                INSERT INTO WindSpeed (sensor_id, speed, recorded_at)
-                                VALUES (:sensor_id, :speed, :recorded_at)
-                            """, {'sensor_id': sensor['id'], 'speed': float(value), 'recorded_at': recorded_at})
-                            new_alert = {'id': result.lastrowid, 'speed': float(value),
-                                         'recordedAt': date_string(recorded_at)}
                     execute_sql(db, """
                         INSERT INTO datasensors (sensor_id, value, recorded_at)
                         VALUES (:sensor_id, :value, :recorded_at)
@@ -155,9 +156,27 @@ class MqttService:
             self.esp_online = True
             self.last_seen = monotonic()
             self.hub.emit("/topic/sensors", clean, recorded_at=date_string(recorded_at))
-        # The transaction above is committed before clients query the new alert.
-        if new_alert is not None:
-            self.hub.emit("/topic/wind-alerts", new_alert)
+    def alert_counts_status(self):
+        with self.lock:
+            return {device_id: self.alert_counts[led] for device_id, led in self.settings.device_map.items()}
+
+    def threshold_status(self):
+        with self.lock:
+            return {"values": dict(self.thresholds), "confirmed": dict(self.threshold_confirmed)}
+
+    def set_thresholds(self, values):
+        with self.lock:
+            if not self.settings.mqtt_enabled or not self.client.is_connected():
+                raise ControlError("MQTT broker chưa kết nối", 503)
+            for key, value in values.items():
+                result = self.client.publish(f"esp32/thresholds/{key}/control", str(value), qos=1, retain=True)
+                if result.rc != mqtt.MQTT_ERR_SUCCESS:
+                    raise ControlError("Không gửi được cấu hình ngưỡng MQTT", 503)
+                self.thresholds[key] = value
+                self.threshold_confirmed[key] = False
+                self.threshold_pending.add(key)
+            self.hub.emit("/topic/thresholds", self.threshold_status())
+            return self.threshold_status()
 
     def _device_status(self, device_id, payload, retained):
         if payload not in {"ON", "OFF", "FAIL"}:
@@ -166,7 +185,7 @@ class MqttService:
         with self.sessions.begin() as db:
             device = execute_sql(db, "SELECT * FROM devices WHERE id = :id",
                                  {'id': device_id}).mappings().first()
-            if device is None or device['device_type'] == "WIND_WARNING":
+            if device is None:
                 return
             status, updated_at = device['status'], device['updated_at']
             if payload != "FAIL":
@@ -195,8 +214,6 @@ class MqttService:
                                      {'id': device_id}).mappings().first()
                 if device is None:
                     raise ControlError("Không tìm thấy thiết bị", 404)
-                if device['device_type'] == "WIND_WARNING":
-                    raise ControlError("Đèn cảnh báo hoạt động tự động, không nhận lệnh bật/tắt", 400)
                 led = self.settings.device_map.get(device_id)
                 if led is None:
                     raise ControlError("Thiết bị chưa được ánh xạ trong MQTT_DEVICE_MAP", 400)

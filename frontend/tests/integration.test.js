@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { api, websocketUrl, setAccessToken } from '../src/services/api.js'
-import { system, startSystem, stopSystem, toggleDevice, controlAllDevices, refreshChartHistory } from '../src/services/system.js'
+import { system, startSystem, stopSystem, toggleDevice, controlAllDevices, refreshChartHistory, saveThresholds } from '../src/services/system.js'
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 const ok = data => ({ ok: true, json: async () => ({ success: true, data }) })
@@ -16,6 +16,8 @@ function mockOfflineDashboard(historyRequest) {
   }
   Object.assign(system, { points: [], sensors: {}, chartError: '', realtime: false })
   globalThis.fetch = async (url) => {
+    if (url === '/api/alert-counts') return ok({ 1: null, 2: null, 3: null })
+    if (url === '/api/thresholds') return ok({ values: { temperature: 35, humidity: 80, light: 3000 }, confirmed: {} })
     if (url === '/api/system/status') return ok({ mqttConnected: false, esp32Online: false })
     if (url === '/api/devices' || url === '/api/sensors/latest') return ok([])
     if (url === '/api/sensors/chart?limit=30') return historyRequest()
@@ -24,10 +26,53 @@ function mockOfflineDashboard(historyRequest) {
   return sockets
 }
 
+test('threshold save waits for ESP32 confirmation', async () => {
+  const sockets = mockOfflineDashboard(() => ok([]))
+  try {
+    startSystem()
+    await tick()
+    const values = { temperature: 30, humidity: 70, light: 2000 }
+    const fetchSnapshot = globalThis.fetch
+    globalThis.fetch = async (url, options) => {
+      if (url === '/api/thresholds' && options.method === 'POST') {
+        assert.deepEqual(JSON.parse(options.body), values)
+        return ok({ values, confirmed: { temperature: false, humidity: false, light: false } })
+      }
+      return fetchSnapshot(url, options)
+    }
+    await saveThresholds(values)
+    assert.equal(system.thresholdConfirmed.temperature, false)
+    sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/thresholds', data: {
+      values, confirmed: { temperature: true, humidity: true, light: true },
+    } }) })
+    assert.equal(system.thresholdConfirmed.temperature, true)
+    sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/sensors', data: { light: 2200 } }) })
+    assert.equal(system.sensors.light.value, 2200)
+  } finally { stopSystem() }
+})
+
+test('alert counters restore from API and follow ESP32 snapshots without adding duplicates', async () => {
+  const sockets = mockOfflineDashboard(() => ok([]))
+  const fetchSnapshot = globalThis.fetch
+  globalThis.fetch = async (url, options) => url === '/api/alert-counts'
+    ? ok({ 1: 10, 2: 0, 3: 25 }) : fetchSnapshot(url, options)
+  try {
+    startSystem()
+    await tick()
+    assert.deepEqual(system.alertCounts, { 1: 10, 2: 0, 3: 25 })
+    const update = (data) => sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/alert-counts', data }) })
+    update({ 1: 11, 2: 2, 3: 28 })
+    update({ 1: 11, 2: 2, 3: 28 })
+    assert.deepEqual(system.alertCounts, { 1: 11, 2: 2, 3: 28 })
+    update({ 1: 0, 2: 0, 3: 0 })
+    assert.deepEqual(system.alertCounts, { 1: 0, 2: 0, 3: 0 })
+  } finally { stopSystem() }
+})
+
 test('dashboard restores 30 database points without hardware and merges subsequent live data', async () => {
   const history = Array.from({ length: 30 }, (_, i) => ({
     time: `2026-10-21 12:00:${String(i).padStart(2, '0')}`,
-    temperature: 25, humidity: 60, light: 1000 + i, windSpeed: i * 10,
+    temperature: 25, humidity: 60, light: 1000 + i,
   }))
   const sockets = mockOfflineDashboard(() => ok(history))
   try {
@@ -37,16 +82,16 @@ test('dashboard restores 30 database points without hardware and merges subseque
     assert.equal(system.esp32Online, false)
     assert.deepEqual(system.points, history)
     sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/sensors',
-      recordedAt: history.at(-1).time, data: { windSpeed: 450 } }) })
+      recordedAt: history.at(-1).time, data: { humidity: 450 } }) })
     assert.equal(system.points.length, 30, 'same timestamp must not appear twice')
-    assert.equal(system.points.at(-1).windSpeed, 450)
+    assert.equal(system.points.at(-1).humidity, 450)
     assert.equal(system.points.at(-1).light, 1029, 'partial data preserves other readings')
     sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/sensors',
-      recordedAt: '2026-10-21 12:00:30', data: { temperature: 26, windSpeed: 500 } }) })
+      recordedAt: '2026-10-21 12:00:30', data: { temperature: 26, humidity: 500 } }) })
     await refreshChartHistory()
     assert.equal(system.points.length, 30)
     assert.equal(system.points[0].time, history[1].time)
-    assert.equal(system.points.at(-1).windSpeed, 500)
+    assert.equal(system.points.at(-1).humidity, 500)
     assert.equal(system.chartError, '')
   } finally { stopSystem() }
 })
@@ -58,11 +103,11 @@ test('slow chart history preserves live events and ignores responses after logou
     startSystem()
     await tick()
     sockets[0].onmessage({ data: JSON.stringify({ topic: '/topic/sensors',
-      recordedAt: '2026-10-21 12:00:02', data: { temperature: 30, windSpeed: 450 } }) })
-    release(ok([{ time: '2026-10-21 12:00:00', temperature: 25, windSpeed: 100 }]))
+      recordedAt: '2026-10-21 12:00:02', data: { temperature: 30, humidity: 450 } }) })
+    release(ok([{ time: '2026-10-21 12:00:00', temperature: 25, humidity: 100 }]))
     await tick()
     assert.equal(system.points.length, 2)
-    assert.equal(system.points.at(-1).windSpeed, 450)
+    assert.equal(system.points.at(-1).humidity, 450)
     const request = refreshChartHistory()
     stopSystem()
     system.points = [] // The login screen clears the previous user's state.
@@ -160,14 +205,16 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
   }
   let status = 0, pending = false, posted
   globalThis.fetch = async (url, options) => {
+    if (url === '/api/alert-counts') return ok({ 1: 0, 2: 0, 3: 0 })
+    if (url === '/api/thresholds') return ok({ values: { temperature: 35, humidity: 80, light: 3000 }, confirmed: {} })
     if (url === '/api/system/status') return ok({ mqttConnected: true, esp32Online: true })
     if (url === '/api/devices') return ok([{ id: 1, name: 'LED', status, controllable: true, pending }])
     if (url === '/api/sensors/chart?limit=30') return ok([
-      { time: '2026-01-01 00:00:00', temperature: 25, humidity: 60, light: 1200, windSpeed: 250 },
+      { time: '2026-01-01 00:00:00', temperature: 25, humidity: 250, light: 1200 },
     ])
     if (url === '/api/sensors/latest') return ok([
       { sensorType: 'temperature', value: 25, recordedAt: '2026-01-01 00:00:00' },
-      { sensorType: 'WIND_SPEED', value: 250, recordedAt: '2026-01-01 00:00:00' },
+      { sensorType: 'HUMIDITY', value: 250, recordedAt: '2026-01-01 00:00:00' },
     ])
     if (url === '/api/devices/control') { posted = JSON.parse(options.body); pending = true; return ok('OK') }
     throw new Error(`Unexpected request: ${url}`)
@@ -184,12 +231,12 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
     await tick()
     assert.equal(system.backendOnline, true)
     assert.equal(system.sensors.temperature.value, 25)
-    assert.equal(system.sensors.windSpeed.value, 250, 'map WIND_SPEED API type to MQTT windSpeed key')
-    ws.event('/topic/sensors', { temperature: 30, humidity: 60, light: 1234, windSpeed: 450 })
+    assert.equal(system.sensors.humidity.value, 250, 'map humidity API type to MQTT key')
+    ws.event('/topic/sensors', { temperature: 30, humidity: 450, light: 1234 })
     assert.equal(system.points.at(-1).light, 1234)
     assert.equal(system.sensors.temperature.value, 30)
-    assert.equal(system.sensors.windSpeed.value, 450)
-    assert.equal(system.points.at(-1).windSpeed, 450)
+    assert.equal(system.sensors.humidity.value, 450)
+    assert.equal(system.points.at(-1).humidity, 450)
     await toggleDevice(system.devices[0])
     assert.deepEqual(posted, { deviceId: 1, status: 1 })
     assert.equal(system.devices[0].status, 0)
@@ -210,7 +257,7 @@ test('dashboard loads real snapshot, waits for ACK, handles timeout and reconnec
     instances[1].onmessage({ data: JSON.stringify({ type: 'authenticated' }) })
     await tick()
     assert.equal(system.sensors.temperature.value, 30, 'older REST snapshot must not replace newer sensor event')
-    assert.equal(system.sensors.windSpeed.value, 450, 'retain latest wind value after reconnect')
+    assert.equal(system.sensors.humidity.value, 450, 'retain latest humidity after reconnect')
     let expiredEvent
     const originalDispatch = globalThis.dispatchEvent
     globalThis.dispatchEvent = event => { expiredEvent = event.type }

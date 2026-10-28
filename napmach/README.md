@@ -28,13 +28,27 @@ Có thể mở `napmach.ino` bằng Arduino IDE; khi đó cài ESP32 board packa
 ba thư viện trên trong Boards Manager/Library Manager của Arduino IDE.
 Kiểm tra Wi-Fi, IP broker, cổng và tài khoản MQTT trong sketch trước khi nạp.
 
-## Tốc độ gió giả lập và LED cảnh báo
+## Ba đèn và ba ngưỡng
 
-Firmware random 0–500 m/s mỗi 5 giây, gửi thêm `windSpeed` trong JSON cảm biến.
-Nối GPIO18 → điện trở 220–330 Ω → chân dương LED; chân âm LED → GND.
-LED nhấp nháy khi tốc độ gió >300 m/s, tắt khi <=300 m/s, chạy bằng tác vụ riêng.
-LED này không nhận lệnh điều khiển, kể cả lệnh bật/tắt tất cả.
-Xem [hướng dẫn và quy tắc đếm cảnh báo](../docs/WIND_SPEED.md).
+LED 1 GPIO2: nhiệt độ; LED 2 GPIO5: độ ẩm; LED 3 GPIO18: ánh sáng.
+Mỗi LED nối qua điện trở 220–330 Ω về GND. DHT11 dùng GPIO4, LDR dùng GPIO33.
+Mặc định ngưỡng tương ứng là 35 °C, 80 %, 3000 ADC; chỉnh trên dashboard.
+Giá trị lớn hơn ngưỡng làm đèn tương ứng nháy mỗi 500 ms, dù công tắc đang tắt.
+Khi về ngưỡng hoặc thấp hơn, đèn trở lại trạng thái công tắc. Các công tắc là
+trạng thái thủ công; ACK MQTT xác nhận trạng thái này, không phải từng nhịp nháy.
+Tác vụ riêng đọc cảm biến mỗi 2 giây và nháy đèn cả khi mất kết nối.
+Ngưỡng được lưu qua Preferences/NVS; không mất khi reset. Khi DHT11 lỗi, hai
+đèn nhiệt độ/độ ẩm trở về trạng thái thủ công cho tới khi đọc hợp lệ trở lại.
+
+Mỗi đèn có bộ đếm cảnh báo riêng trong RAM, tăng 1 khi bắt đầu một đợt vượt
+ngưỡng. Nháy liên tục vẫn là 1 đợt; chỉ khi giá trị về ngưỡng hoặc thấp hơn rồi
+vượt lại mới tăng tiếp. Lỗi DHT tạm thời không chia đợt cảnh báo. Bật/tắt thủ công
+không được tính. Bộ đếm về 0 khi ESP32 khởi động lại;
+mất Wi-Fi/MQTT vẫn đếm. Topic retained `esp32/leds/alert-counts` gửi tổng số hiện tại
+`{"led1":5,"led2":0,"led3":12}` mỗi 2 giây và ngay khi kết nối lại.
+
+Topic `esp32/thresholds/{temperature|humidity|light}/control` nhận số ngưỡng;
+topic tương ứng `/status` trả ngưỡng đã lưu. Cả cấu hình và xác nhận đều retained.
 
 ## VS Code báo không tìm thấy Arduino.h / DHT.h
 
