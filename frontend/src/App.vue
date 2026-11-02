@@ -110,7 +110,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { startSystem, stopSystem, system } from './services/system'
+import { startSystem, stopSystem, resetSystemState, system } from './services/system'
 import { api, setAccessToken } from './services/api'
 import Sidebar from './components/Sidebar.vue'
 import Dashboard from './views/Dashboard.vue'
@@ -141,16 +141,7 @@ function clearSession() {
   stopSystem()
   setAccessToken('')
   user.value = null
-  Object.assign(system, {
-    devices: [],
-    sensors: {},
-    points: [],
-    chartError: '',
-    error: '',
-    sensorError: '',
-    controlError: '',
-    sending: {},
-  })
+  resetSystemState()
 }
 function sessionExpired() {
   clearSession()

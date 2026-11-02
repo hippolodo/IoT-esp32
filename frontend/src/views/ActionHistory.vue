@@ -4,7 +4,7 @@
       <div>
         <h2 class="text-2xl font-bold text-[#1a1d2e]">Lịch Sử Thao Tác Thiết Bị</h2>
         <p class="text-sm text-gray-500 mt-1">
-          Tra cứu thao tác bật/tắt và các đợt cảnh báo của 3 đèn
+          Tra cứu thao tác bật/tắt và các lần đo vượt ngưỡng của 3 đèn
         </p>
       </div>
       <ConnectionStatus />
@@ -111,7 +111,7 @@
 
     <p v-if="error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
     <p v-if="loading" role="status" class="mb-3 text-sm text-gray-500">Đang tải lịch sử…</p>
-    <p class="mb-3 text-xs text-gray-500">Cảnh báo ghi theo thời điểm backend nhận số đếm tăng. Khi đồng bộ sau mất mạng, một dòng có thể gồm nhiều đợt. Tổng cũ trước khi bật lưu lịch sử không tạo lại dòng quá khứ.</p>
+    <p class="mb-3 text-xs text-gray-500">Mỗi lần đo vượt ngưỡng tính 1 cảnh báo, kể cả giá trị không đổi. Lịch sử ghi theo thời điểm backend nhận số đếm tăng; một dòng có thể gộp nhiều lần đo và chỉ có số đo vượt ngưỡng cuối cùng.</p>
     <div
       class="bg-white rounded-2xl shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 overflow-hidden"
     >
@@ -209,7 +209,7 @@
                   {{ log.deviceStatus }}
                 </div>
                 <p v-if="log.isAlert && log.alertValue != null && log.alertThreshold != null" class="mt-1 text-xs text-red-600">
-                  {{ log.alertCount > 1 ? 'Đợt cuối: ' : '' }}{{ log.alertValue }} {{ log.alertUnit }} &gt; {{ log.alertThreshold }} {{ log.alertUnit }}
+                  {{ log.alertCount > 1 ? 'Lần cuối: ' : '' }}{{ log.alertValue }} {{ log.alertUnit }} &gt; {{ log.alertThreshold }} {{ log.alertUnit }}
                   · Vượt {{ log.alertExcess }} {{ log.alertUnit }}
                 </p>
                 <p v-else-if="log.isAlert" class="mt-1 text-xs text-gray-400">Chưa lưu giá trị lúc vượt</p>
@@ -349,7 +349,7 @@ const paginatedData = computed(() =>
       execStatusColor: isAlert || row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
       execStatusTextClass:
         isAlert || row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
-      deviceStatus: isAlert ? ` Tổng ${row.alertTotal ?? '—'}` : success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
+      deviceStatus: isAlert ? `+${row.alertCount ?? 1} lần · Tổng ${row.alertTotal ?? '—'}` : success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
       deviceStatusColor: isAlert ? 'bg-red-500' : success ? 'bg-emerald-500' : 'bg-gray-300',
       timestamp: row.timestamp,
       date: row.timestamp.split(' ')[0],

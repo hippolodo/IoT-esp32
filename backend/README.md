@@ -5,10 +5,121 @@ Paho MQTT 2 và WebSocket thường. Frontend Vue đã nối REST/WebSocket qua 
 đến cổng 8088; dashboard nhận cảm biến, điều khiển đèn và đồng bộ trạng thái thật.
 
 Backend được chia thành `routers/`, `services/`, `models/`, cùng `schemas.py`
-và `passwords.py`. Xem [bản đồ file và luồng xử lý](ARCHITECTURE.md) để đọc code.
+và `passwords.py`. Xem [bản đồ file và luồng xử lý](#cấu-trúc-backend) để đọc code.
 `main.py` quản lý khởi tạo/lifecycle và gắn router; các endpoint nằm trong `routers/`.
 Các service dùng SQL trực tiếp có tham số qua `execute_sql()` trong `contracts.py`.
 SQLAlchemy quản lý kết nối/transaction; model được giữ để mô tả bảng và phục vụ kiểm thử.
+
+## Cấu trúc backend
+
+Backend cung cấp REST API, WebSocket `/ws` và dữ liệu JSON cho hệ thống 3 cảm biến, 3 đèn.
+Điểm chạy vẫn là `app.main:app`; frontend không cần thay URL.
+
+```text
+app/
+├── main.py                  # Tạo app, middleware, startup/shutdown, gắn router
+├── config.py                # Đọc .env: database, MQTT, CORS
+├── database.py              # Engine và session factory
+├── dependencies.py          # DB, người đăng nhập, MQTT, cấu hình của từng app
+├── contracts.py             # Envelope, serializer, phân trang, thời gian Việt Nam
+├── schemas.py               # Schema tài khoản, điều khiển đèn và ThresholdRequest
+├── passwords.py             # Băm và kiểm tra mật khẩu
+├── models/
+│   └── __init__.py          # Các model SQLAlchemy và quan hệ giữa bảng
+├── routers/
+│   ├── auth.py              # Đăng ký, đăng nhập, đăng xuất, hồ sơ
+│   ├── devices.py           # Danh sách, chi tiết, điều khiển đèn
+│   ├── sensors.py           # Danh mục, số đo, lịch sử biểu đồ, lọc
+│   ├── history.py           # Lịch sử điều khiển đèn
+│   ├── thresholds.py        # Đọc, cấu hình và xác nhận 3 ngưỡng
+│   ├── system.py            # Health và trạng thái kết nối
+│   └── realtime.py          # Xác thực và truyền sự kiện WebSocket
+└── services/
+    ├── auth.py              # Tài khoản, cấp token, kiểm tra phiên
+    ├── devices.py           # Truy vấn thiết bị, chuyển yêu cầu điều khiển
+    ├── sensors.py           # Truy vấn và ghép dữ liệu cảm biến/biểu đồ
+    ├── history.py           # Lọc, sắp xếp, phân trang lịch sử
+    └── mqtt.py              # MQTT, ACK, timeout, lưu số đo, xác nhận ngưỡng, EventHub
+```
+
+### Trách nhiệm từng lớp
+
+- **Router** khai báo method/URL, schema đầu vào, xác thực, rồi gọi service.
+  Kết quả được đóng gói bằng `envelope()` tại router.
+- **Service** xử lý nghiệp vụ, kiểm tra điều kiện và truy vấn dữ liệu. Service
+  viết SQL trực tiếp (`SELECT/INSERT/UPDATE/DELETE`), truyền giá trị bằng tham số
+  và trả dữ liệu kết quả; không khai báo endpoint hay phụ thuộc `Request`.
+- **Model** mô tả cấu trúc bảng và phục vụ fixture kiểm thử. Nghiệp vụ không dùng
+  ORM `db.add()`, `db.get()` hoặc tự sinh query từ model nữa.
+- **Dependency** lấy DB/MQTT/cấu hình từ `request.app.state`, tránh dùng nhầm
+  kết nối hoặc phiên khi tạo nhiều app trong kiểm thử.
+- **Database có sẵn**: BE không tự tạo bảng, sửa schema hay seed lúc startup.
+  Khi cần thay đổi cấu trúc DB, chạy SQL/migration riêng.
+
+### Ví dụ lần theo code
+
+Điều khiển đèn:
+
+```text
+routers/devices.py: control()
+  → schemas.py: DeviceControlRequest
+  → dependencies.py: current_user(), get_mqtt()
+  → services/devices.py: control()
+  → services/mqtt.py: MqttService.control()
+  → ESP32 → MqttService._device_status()
+  → SQL UPDATE devices/histories → EventHub → WebSocket
+```
+
+Lấy dữ liệu biểu đồ Dashboard:
+
+```text
+routers/sensors.py: sensor_chart()
+  → dependencies.py: database(), current_session()
+  → services/sensors.py: sensor_chart()
+  → SQL SELECT datasensors JOIN sensors
+  → router bọc envelope → frontend
+```
+
+### Các vị trí đã chuyển
+
+| Trước đây | Hiện tại |
+|---|---|
+| API và truy vấn tập trung trong `main.py` | `routers/` và `services/` theo chức năng |
+| Model trong `database.py` | `models/__init__.py` |
+| Tự khởi tạo/seed khi startup | Đã bỏ; dùng database có sẵn |
+| `app/mqtt.py` | `app/services/mqtt.py` |
+| API hồ sơ trong `routers/users.py` | Gộp vào `routers/auth.py` |
+| Mật khẩu trong `security/` | Gộp về `app/passwords.py` |
+| Request model trong `main.py` và `schemas/` | Gộp vào `schemas.py` |
+| Hàm xác thực phụ thuộc closure của `create_app` | `dependencies.py`, `services/auth.py` |
+| WebSocket trong `main.py` | `routers/realtime.py` |
+
+### Thứ tự đọc code
+
+Đọc `config.py` → `models/__init__.py` → `database.py` →
+`schemas.py` → `dependencies.py` → `routers/` → service tương ứng.
+Sau đó đọc `main.py` để thấy các phần được nối lại khi app khởi động.
+Các tiện ích dùng chung, `ControlError` và xử lý lỗi HTTP nằm ở `contracts.py`.
+`execute_sql()` trong file này gọi `db.execute(text(sql), params)` và gắn kiểu
+datetime cho tham số để MySQL/SQLite xử lý thời gian nhất quán.
+
+### Ví dụ SQL lưu lệnh điều khiển
+
+Trong `services/mqtt.py`, `MqttService.control()` ghi:
+
+```python
+result = execute_sql(db, """
+    INSERT INTO histories (device_id, user_id, action, status, timestamp)
+    VALUES (:device_id, :user_id, :action, 'PENDING', :timestamp)
+""", {'device_id': device_id, 'user_id': user_id, 'action': action, 'timestamp': now()})
+history_id = result.lastrowid
+```
+
+SQL được thực thi ngay; `lastrowid` lấy ID mới. Giao dịch commit khi thoát
+`with self.sessions.begin()`; sau đó mới publish MQTT. Khi ESP32 phản hồi,
+`_device_status()` chạy `UPDATE devices ...` và `UPDATE histories ...`.
+Không ghép giá trị người dùng vào câu SQL; các placeholder `:device_id` được bind.
+Riêng từ khóa sắp xếp ASC/DESC được kiểm tra danh sách cho phép trước khi ghép.
 
 ## Chạy trên Windows PowerShell
 
@@ -101,7 +212,7 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | GET | `/api/user/profile` | |
 | GET | `/api/devices` | |
 | GET | `/api/devices/{id}` | |
-| GET | `/api/alert-counts` | Số đợt cảnh báo theo device ID; null nếu chưa nhận từ ESP32 |
+| GET | `/api/alert-counts` | Số lần đo vượt ngưỡng theo device ID; null nếu chưa nhận từ ESP32 |
 | POST | `/api/devices/control` | `{"deviceId":1,"status":1}` (0=OFF, 1=ON) |
 | GET | `/api/sensors` | |
 | GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
@@ -125,25 +236,27 @@ qua `MQTT_DEVICE_MAP` rồi phát `/topic/alert-counts`. Bản tin lặp không 
 Tổng được lưu trong bảng `alert_counts` (`led`, `total`, `updated_at`). API đọc từ DB,
 khôi phục được cả khi backend khởi động lại và ESP32 đang offline. Snapshot trùng
 hoặc thấp hơn tổng đã lưu không làm tăng thêm hoặc giảm tổng. ESP32 lưu tổng và
-trạng thái đợt trong NVS nên reset vẫn tiếp tục đếm từ tổng trước đó.
+chi tiết lần đo cuối trong NVS nên reset vẫn tiếp tục đếm từ tổng trước đó.
+Mỗi mẫu hợp lệ vượt ngưỡng cộng 1 (2 giây/lần), kể cả giá trị giống mẫu trước;
+nhịp nháy và bật/tắt thủ công không tăng tổng. Tổng cũ được giữ khi nâng cấp firmware.
 Tạo bảng một lần bằng `python migrate_alert_counts.py` trong thư mục `backend`;
 lệnh có thể chạy lại, không xóa hay đặt lại số đếm hiện có.
 Migration này cũng tạo `alert_history_details`. Khi tổng tăng sau snapshot đầu tiên,
-backend lưu `histories.action=ALERT`, `status=RECORDED`, `user_id=NULL`, cùng số đợt
+backend lưu `histories.action=ALERT`, `status=RECORDED`, `user_id=NULL`, cùng số lần đo vượt ngưỡng
 tăng (`occurrence_count`) và tổng mới (`total`) trong bảng chi tiết. Lọc qua
 `/api/history?action=ALERT`, kết hợp `deviceId`, `status=RECORDED` và thời gian.
-Timestamp là thời điểm backend ghi nhận; khi offline nhiều đợt có thể được gộp
+Timestamp là thời điểm backend ghi nhận; khi offline nhiều lần đo có thể được gộp
 trong một dòng. Không tạo ngược lịch sử quá khứ từ tổng đã có. MQTT trùng/cũ
 không tạo lại dòng lịch sử. Sự kiện `/topic/history` báo frontend tải lại danh sách.
 Payload có thể thêm `details.led1={"total":12,"value":32.5,"threshold":30}` (tương tự
 led2/led3). `total` phải khớp tổng của đèn trong cùng bản tin; giá trị phải hữu hạn
 và lớn hơn ngưỡng hợp lệ. Backend lưu vào `trigger_value`, `trigger_threshold`;
-API trả `alertValue`, `alertThreshold`. Chỉ dùng số đo được chụp lúc bắt đầu đợt,
+API trả `alertValue`, `alertThreshold`. Chỉ dùng số đo được chụp tại lần đo vượt ngưỡng được tính cuối cùng,
 không suy ra từ số đo mới nhất hay ngưỡng hiện tại. Firmware cũ vẫn được chấp nhận
-với giá trị null. Dòng gộp nhiều đợt chỉ có số đo của đợt cuối, giao diện ghi rõ.
+với giá trị null. Dòng gộp nhiều lần đo chỉ có số đo của lần đo cuối, giao diện ghi rõ.
 Chạy lại `python migrate_alert_counts.py` để bổ sung hai cột cho database hiện có.
-Ngoại lệ cho baseline: snapshot đầu tiên có chi tiết hợp lệ thì ghi đúng 1 đợt
-cuối đã biết số đo, không tạo lịch sử cho các đợt trước không có chi tiết.
+Ngoại lệ cho baseline: snapshot đầu tiên có chi tiết hợp lệ thì ghi đúng 1 lần đo
+cuối đã biết số đo, không tạo lịch sử cho các lần đo trước không có chi tiết.
 Với database cũ, chạy `python migrate_live_code.py` sau khi cấu hình đủ ba LED
 trong `MQTT_DEVICE_MAP`; script chỉ cập nhật danh mục đèn, giữ dữ liệu đo cũ.
 
@@ -249,6 +362,44 @@ Client chậm chỉ giữ tối đa 100 sự kiện mới nhất.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Xem [TESTING.md](TESTING.md) cho phạm vi tự động và kiểm tra mạch thật.
+Test dùng database SQLite tạm riêng cho từng test, không truy cập MySQL hay broker
+thật. MQTT publish được giả lập; xử lý bản tin dùng chính service của ứng dụng.
+`tests/db_setup.py` chuẩn bị bảng và dữ liệu mẫu cho DB SQLite tạm trước khi mở
+TestClient; phần này không được ứng dụng import hay gọi khi chạy BE.
+
+Phạm vi: REST API, đăng ký/PBKDF2 và login SHA-256 tương thích, profile, định dạng envelope/camelCase,
+phân trang, lọc thời gian bao gồm đơn vị cuối, dữ liệu DHT lỗi, ACK cập nhật cùng một
+history, retained snapshot, publish lỗi, timeout, LED chưa map, đăng ký lại topic
+khi reconnect, WebSocket event/filter. Startup được kiểm tra không tạo bảng,
+không bổ sung danh mục và không sửa dữ liệu có sẵn.
+Các API GET dữ liệu được kiểm tra với token thiếu, giả, hết hạn và đã đăng xuất.
+WebSocket kiểm tra xác thực bản tin đầu tiên/header, từ chối trước khi subscribe,
+và đóng phiên đã hết hạn/thu hồi ngay cả khi không có sự kiện mới.
+Kiểm tra thêm hai app chạy đồng thời phải giữ riêng DB, token và cấu hình MQTT.
+Các service dùng SQL trực tiếp có tham số. Test kiểm tra dấu nháy không thay đổi
+cấu trúc truy vấn, ký tự `%`/`_` trong tìm kiếm được xử lý như giá trị literal,
+và đăng xuất chỉ xóa đúng phiên hiện tại.
+
+### Kiểm tra thủ công với MySQL/Mosquitto/ESP32
+
+1. Cấu hình `.env`, khởi động MySQL và broker rồi chạy uvicorn theo README.
+2. Đăng nhập trong `/docs`, dán token vào Authorize rồi kiểm tra `/api/devices`, `/api/sensors`. Đối chiếu MQTT_DEVICE_MAP với
+   ID thật trong database và LED1/LED2/LED3 của mạch.
+3. Nạp firmware, kiểm tra có dữ liệu mới qua `/api/sensors/latest` và `/api/sensors/data`.
+4. Mở WebSocket `/ws` và gửi bản tin xác thực theo README, gửi POST `/api/devices/control`; kiểm tra đèn vật lý,
+   trạng thái thiết bị và đúng một history chuyển từ PENDING sang SUCCESS.
+5. Ngắt mạch và gửi lệnh: history phải FAILED sau timeout. Ngắt broker: POST trả 503.
+6. Khởi động broker lại: xác nhận service tự kết nối và nhận dữ liệu mới.
+7. Khởi động backend lại: giữ dữ liệu, không tự tạo bảng/seed; retained status không thêm history SUCCESS giả.
+
+Các test tự động không chứng minh kết nối MySQL, cấu hình broker hay dây nối thực tế.
+
+Kiểm thử bổ sung cho FE/BE: trạng thái kết nối và hết hạn heartbeat ESP32,
+capability/pending của thiết bị, lọc loại cảm biến/giá trị, lọc hành động và sort
+lịch sử trước phân trang. Frontend có `npm test` cho hợp đồng API, ACK, timeout và
+reconnect. Đã kiểm tra API qua Vite proxy và nhận gói cảm biến thật qua `/ws`.
+
+### Tài liệu tham khảo
+
 Tham khảo [FastAPI WebSockets](https://fastapi.tiangolo.com/advanced/websockets/)
 và [Paho MQTT Python](https://eclipse.dev/paho/clients/python/docs/).

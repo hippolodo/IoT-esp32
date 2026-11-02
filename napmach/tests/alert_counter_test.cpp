@@ -1,28 +1,31 @@
 #include "AlertCounter.h"
 
 constexpr AlertCounter initial{0, false};
-constexpr auto normal = advanceAlertCounter(initial, true, false);
-constexpr auto first = advanceAlertCounter(normal, true, true);
-constexpr auto ongoing = advanceAlertCounter(first, true, true);
-constexpr auto missing = advanceAlertCounter(ongoing, false, false);
-constexpr auto recovered = advanceAlertCounter(missing, true, true);
-constexpr auto equalOrBelow = advanceAlertCounter(recovered, true, false);
-constexpr auto second = advanceAlertCounter(equalOrBelow, true, true);
-static_assert(normal.count == 0, "Normal readings must not trigger alerts");
-static_assert(first.count == 1 && first.active, "First high reading starts one episode");
-static_assert(ongoing.count == 1, "Repeated samples and blink cycles must not add alerts");
-static_assert(missing.count == 1 && missing.active, "Missing data must preserve the episode");
-static_assert(recovered.count == 1, "Recovery while still high must not retrigger");
-static_assert(equalOrBelow.count == 1 && !equalOrBelow.active, "At or below threshold rearms");
-static_assert(second.count == 2 && second.active, "A new excursion adds one alert");
-// Restoring the NVS state on reboot must not start the same episode again.
-constexpr AlertCounter restored{second.count, second.active};
+constexpr float threshold = 30;
+constexpr auto below = advanceAlertCounter(initial, true, 29 > threshold);
+constexpr auto equal = advanceAlertCounter(below, true, 30 > threshold);
+constexpr auto first35 = advanceAlertCounter(equal, true, 35 > threshold);
+constexpr auto second35 = advanceAlertCounter(first35, true, 35 > threshold);
+constexpr auto third35 = advanceAlertCounter(second35, true, 35 > threshold);
+static_assert(below.count == 0 && equal.count == 0, "At or below threshold must not add alerts");
+static_assert(first35.count == 1, "First sample at 35 above threshold 30 adds one alert");
+static_assert(second35.count == 2, "An identical second sample at 35 must add another alert");
+static_assert(third35.count == 3 && third35.active, "Each fresh high sample adds one alert");
+
+constexpr auto missing = advanceAlertCounter(third35, false, true);
+constexpr auto recovered35 = advanceAlertCounter(missing, true, 35 > threshold);
+constexpr auto normal = advanceAlertCounter(recovered35, true, false);
+constexpr auto next35 = advanceAlertCounter(normal, true, 35 > threshold);
+static_assert(missing.count == 3, "Invalid samples must not add alerts");
+static_assert(recovered35.count == 4, "A valid high sample after recovery adds one alert");
+static_assert(normal.count == 4 && !normal.active, "Normal samples preserve the total");
+static_assert(next35.count == 5, "A later high sample continues the total");
+
+// NVS restores the previous total; the first new high sample after reboot counts.
+constexpr AlertCounter restored{next35.count, next35.active};
 constexpr auto afterReset = advanceAlertCounter(restored, true, true);
-constexpr auto rearmed = advanceAlertCounter(afterReset, true, false);
-constexpr auto afterResetNextEpisode = advanceAlertCounter(rearmed, true, true);
-static_assert(afterReset.count == 2, "Reset while above threshold must preserve one episode");
-static_assert(afterResetNextEpisode.count == 3, "A later episode continues the saved total");
-static_assert(advanceAlertCounter(initial, true, true).count == 1, "A separate LED starts independently");
-static_assert(second.count == 2, "Updating a separate counter must not change other LEDs");
-static_assert(advanceAlertCounter({UINT32_MAX, false}, true, true).count == UINT32_MAX,
+static_assert(afterReset.count == 6, "New high readings count even if NVS active was true");
+static_assert(advanceAlertCounter(initial, true, true).count == 1, "Each LED counts independently");
+static_assert(third35.count == 3, "Updating another counter does not affect this LED");
+static_assert(advanceAlertCounter({UINT32_MAX, true}, true, true).count == UINT32_MAX,
               "Counter must saturate instead of wrapping to zero");

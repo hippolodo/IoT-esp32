@@ -285,6 +285,25 @@ def test_alert_counts_snapshots_duplicates_and_stale_reset_values(client, connec
     assert client.get('/api/history').json()['data']['totalElements'] == 0
 
 
+def test_identical_high_readings_keep_increasing_alert_count(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    for total in (1, 2):
+        # Firmware counts each fresh 35-degree reading above threshold 30.
+        service.handle_message('esp32/sensor/data', '{"temperature":35}')
+        payload = json.dumps({'led1': total, 'led2': 0, 'led3': 0, 'details': {
+            'led1': {'total': total, 'value': 35, 'threshold': 30},
+        }})
+        service.handle_message('esp32/leds/alert-counts', payload)
+        service.handle_message('esp32/leds/alert-counts', payload, retained=True)
+        assert service.alert_counts_status()[1] == total
+    rows = client.get('/api/history?action=ALERT&deviceId=1&sort=asc').json()['data']['content']
+    assert len(rows) == 2
+    assert [row['alertCount'] for row in rows] == [1, 1]
+    assert [row['alertTotal'] for row in rows] == [1, 2]
+    assert all(row['alertValue'] == 35 and row['alertThreshold'] == 30 for row in rows)
+
+
 def test_alert_counts_survive_backend_restart_and_keep_counting(client):
     service = client.app.state.mqtt
     service.handle_message('esp32/leds/alert-counts', '{"led1":15,"led2":2,"led3":30}')
@@ -357,7 +376,7 @@ def test_alert_history_stores_trigger_values_and_original_threshold(client):
     assert row['alertCount'] == 3 and row['alertValue'] == 42 and row['alertThreshold'] == 40
 
 
-def test_first_snapshot_with_trigger_detail_records_only_the_known_episode(client):
+def test_first_snapshot_with_trigger_detail_records_only_the_known_reading(client):
     service = client.app.state.mqtt
     service.handle_message('esp32/leds/alert-counts', json.dumps({
         'led1': 8, 'led2': 0, 'led3': 0,

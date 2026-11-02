@@ -9,27 +9,27 @@ Khi giá trị về ngưỡng hoặc thấp hơn, đèn trở về trạng thái
 Ngưỡng mặc định: 35 °C, 80 %, 3000 ADC. ESP32 lưu ngưỡng trong NVS và đọc cảm biến
 mỗi 2 giây, tiếp tục cảnh báo khi mất mạng. DHT lỗi thì ngừng cảnh báo nhiệt độ/độ ẩm.
 
-Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Mỗi đợt vượt ngưỡng tính
-1 lần, không tăng theo từng nhịp nháy. Giá trị về ngưỡng hoặc thấp hơn rồi vượt
-lại mới tính đợt mới; bật/tắt thủ công không tăng số đếm. Bộ đếm và trạng thái đợt
-được lưu vào NVS khi chuyển đợt, không mất khi reset/mất điện. Reset trong lúc
-vẫn vượt ngưỡng không tăng thêm đợt. Mất mạng vẫn đếm; kết nối lại gửi tổng mới nhất.
-Backend lưu tổng từng đèn trong bảng `alert_counts`, không mất khi backend khởi động lại.
-Số đếm cập nhật mỗi 2 giây qua MQTT retained và WebSocket;
-tải lại trang lấy số gần nhất qua `GET /api/alert-counts`.
-Mất dữ liệu DHT tạm thời không tách một đợt cảnh báo thành nhiều đợt.
+Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Mỗi lần đọc cảm biến
+có giá trị lớn hơn ngưỡng tính 1 lần (chu kỳ đọc 2 giây), kể cả giá trị không đổi.
+Ví dụ ngưỡng 30 °C, hai lần đọc liên tiếp đều là 35 °C thì tăng 2 lần.
+Nhịp nháy đèn, thao tác bật/tắt thủ công và mẫu DHT lỗi không cộng số đếm.
+Bộ đếm được lưu vào NVS khi thay đổi; sau reset, lần đọc mới vượt ngưỡng vẫn tăng tiếp.
+Mất mạng vẫn đếm; kết nối lại gửi tổng mới nhất. Backend lưu tổng từng đèn trong
+bảng `alert_counts`, không mất khi backend khởi động lại. Số đếm cập nhật mỗi 2 giây
+qua MQTT retained và WebSocket; tải lại trang lấy số gần nhất qua `GET /api/alert-counts`.
+Tổng cũ được giữ nguyên khi nâng cấp firmware, không chuyển ngược thành số lần đo.
 
 Action History có hành động **CẢNH BÁO** và trạng thái **Đã ghi nhận cảnh báo**,
 kết hợp được với bộ lọc từng đèn và thời gian. Khi tổng tăng, backend lưu một dòng
-`ALERT/RECORDED`, kèm số đợt tăng và tổng mới trong `alert_history_details`.
-Nếu đồng bộ nhiều đợt sau mất mạng, một dòng ghi `+N đợt`; thời gian là lúc backend
+`ALERT/RECORDED`, kèm số lần đo vượt ngưỡng tăng và tổng mới trong `alert_history_details`.
+Nếu đồng bộ nhiều lần sau mất mạng, một dòng ghi `+N lần`; thời gian là lúc backend
 nhận dữ liệu. Snapshot đầu tiên chỉ thiết lập tổng, không tạo lịch sử giả cho quá khứ.
-Firmware gửi kèm số đo và ngưỡng được chụp tại lúc bắt đầu đợt cảnh báo. Backend
+Firmware gửi kèm số đo và ngưỡng được chụp tại lần đo vượt ngưỡng gần nhất. Backend
 lưu vào `trigger_value`, `trigger_threshold` trong `alert_history_details` và
 Action History hiển thị số đo, ngưỡng, mức vượt. Dữ liệu cũ để trống nếu chưa có
-hai giá trị này. Nếu một dòng gộp nhiều đợt sau mất mạng, đây là giá trị của đợt cuối.
-Nếu snapshot đầu tiên có chi tiết hợp lệ, chỉ đợt cuối có số đo được ghi nhận,
-không tạo thêm dòng cho các đợt cũ không có chi tiết.
+hai giá trị này. Nếu một dòng gộp nhiều lần đo sau mất mạng, đây là giá trị của lần đo cuối.
+Nếu snapshot đầu tiên có chi tiết hợp lệ, chỉ lần đo cuối có số đo được ghi nhận,
+không tạo thêm dòng cho các lần đo cũ không có chi tiết.
 
 Trước khi chạy backend, tạo bảng bộ đếm bằng lệnh từ thư mục gốc:
 `backend/.venv/Scripts/python.exe backend/migrate_alert_counts.py`.
@@ -89,19 +89,17 @@ flowchart LR
 │   ├── .env.example           # Mẫu cấu hình môi trường
 │   ├── requirements.txt
 │   ├── requirements-dev.txt
-│   ├── README.md
-│   └── TESTING.md
+│   └── README.md
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
 │   │   └── views/             # Dashboard, cảm biến, lịch sử, hồ sơ
 │   ├── public/
 │   └── package.json
-├── napmach/
+└── napmach/
 │   ├── napmach.ino            # Firmware nạp ESP32
 │   ├── platformio.ini         # Board và thư viện Arduino
 │   └── README.md
-└── documentMQTT.txt           # Ghi chú/lệnh MQTT dùng tại máy phát triển
 ```
 
 ## Yêu cầu
@@ -203,6 +201,12 @@ npm run build
 Kết quả được tạo trong `frontend/dist/`. Vite chuyển tiếp `/api` và `/ws` tới
 FastAPI cổng 8088; cần chạy cả hai server. WebSocket tự kết nối lại, REST đồng bộ
 trạng thái mỗi 5 giây. Hai bảng lọc/phân trang trên backend và tự cập nhật dữ liệu.
+
+Frontend giữ đầu mối export tại `src/services/system.js`. Trong `src/services/system/`,
+`state.js` quản lý trạng thái và đăng ký sự kiện, `connection.js` quản lý REST polling,
+WebSocket và vòng đời request, `commands.js` gửi lệnh điều khiển đèn và lưu ngưỡng.
+Khi đăng xuất, gọi `stopSystem()` rồi `resetSystemState()` để hủy request và xóa dữ liệu;
+response hoặc sự kiện của phiên cũ không được cập nhật trạng thái phiên mới.
 
 Khi deploy, cấu hình reverse proxy cho `/api` và `/ws` về FastAPI, hoặc đặt
 `VITE_API_BASE_URL` thành URL backend lúc build và thêm origin frontend vào
@@ -319,7 +323,7 @@ Tại thư mục `backend`:
 
 Test tự động kiểm tra API, bộ lọc thời gian, MQTT handler, lịch sử và WebSocket
 với database tạm. Kiểm thử trên phần cứng thật thực hiện theo
-[backend/TESTING.md](backend/TESTING.md).
+[phần kiểm thử backend](backend/README.md#kiểm-thử).
 
 Kiểm thử frontend tại thư mục `frontend`:
 
@@ -340,5 +344,5 @@ timeout, reconnect và tránh ghi đè sự kiện mới bằng snapshot cũ.
 ## Trước khi đưa repository lên GitHub
 
 File `.env`, dependency và thư mục build đã được đưa vào `.gitignore`.
-Riêng sketch và `documentMQTT.txt` hiện có thông tin kết nối dùng tại máy phát triển;
+Riêng sketch hiện có thông tin kết nối dùng tại máy phát triển;
 thay thông tin Wi-Fi/MQTT cá nhân bằng giá trị mẫu trước khi công khai repository.

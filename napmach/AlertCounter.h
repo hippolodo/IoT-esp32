@@ -6,10 +6,11 @@ struct AlertCounter {
   bool active;
 };
 
-// Invalid readings preserve the episode until a valid normal reading rearms it.
+// Call once per sensor sample: every valid reading above the threshold adds one.
+// Keep the active field so existing NVS records remain readable.
 constexpr AlertCounter advanceAlertCounter(AlertCounter previous, bool valid, bool exceeded) {
   return !valid ? previous : AlertCounter{
-    previous.count + ((exceeded && !previous.active && previous.count < UINT32_MAX) ? 1u : 0u),
+    previous.count + ((exceeded && previous.count < UINT32_MAX) ? 1u : 0u),
     exceeded
   };
 }

@@ -130,7 +130,7 @@ class MqttService:
                         device_id = next((key for key, value in self.settings.device_map.items() if value == led), None)
                         device_exists = device_id is not None and execute_sql(
                             db, 'SELECT id FROM devices WHERE id = :id', {'id': device_id}).first()
-                        # A first snapshot can describe its last known episode, but not older ones.
+                        # A first snapshot can describe its last counted reading, but not older ones.
                         detail = counts.get('details', {})
                         detail = detail.get(led) if isinstance(detail, dict) else None
                         value = threshold = None

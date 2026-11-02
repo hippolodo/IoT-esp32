@@ -95,7 +95,7 @@
           <i class="fa-regular fa-lightbulb text-amber-500 mr-2 text-lg"></i>
           <h3 class="text-lg font-bold">Điều Khiển Đèn</h3>
         </div>
-        <p class="mb-4 text-xs text-gray-500">Mỗi đợt vượt ngưỡng tính 1 cảnh báo. Số đếm được lưu lâu dài, không mất khi ESP32 khởi động lại.</p>
+        <p class="mb-4 text-xs text-gray-500">Mỗi lần đọc cảm biến vượt ngưỡng tính 1 cảnh báo (2 giây/lần), kể cả giá trị không đổi. Nhịp nháy và bật/tắt thủ công không cộng thêm.</p>
 
         <p v-if="!lamps.length" class="text-sm text-gray-500">Chưa có thiết bị.</p>
         <div v-if="lamps.length" class="grid grid-cols-2 gap-3 mb-4" :aria-busy="system.sendingAll">
@@ -189,14 +189,13 @@ import {
   LinearScale,
   PointElement,
   LineElement,
-  Title,
   Tooltip,
   Legend,
 } from 'chart.js'
 import { Line } from 'vue-chartjs'
 import ConnectionStatus from '../components/ConnectionStatus.vue'
 import { system, toggleDevice, controlAllDevices, saveThresholds } from '../services/system'
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 const lamps = computed(() =>
   system.devices.map((row) => ({
     ...row,
@@ -215,9 +214,17 @@ const thresholdFields = [
   { key: 'light', label: 'Ánh sáng (ADC) · Đèn 3', max: 4095 },
 ]
 const draft = reactive({ temperature: 35, humidity: 80, light: 3000 })
-const dirty = ref(false), saving = ref(false), thresholdError = ref('')
+const dirty = ref(false)
+const saving = ref(false)
+const thresholdError = ref('')
 const thresholdsConfirmed = computed(() => thresholdFields.every(({ key }) => system.thresholdConfirmed[key]))
-watch(() => system.thresholds, (values) => { if (!dirty.value) Object.assign(draft, values) }, { immediate: true })
+watch(
+  () => system.thresholds,
+  (values) => {
+    if (!dirty.value) Object.assign(draft, values)
+  },
+  { immediate: true },
+)
 async function submitThresholds() {
   saving.value = true
   thresholdError.value = ''
@@ -237,13 +244,6 @@ const allControlsDisabled = computed(() =>
   system.sendingAll ||
   !controllableLamps.value.length ||
   controllableLamps.value.some((lamp) => lamp.pending || system.sending[lamp.id]),
-)
-const latestTime = computed(
-  () =>
-    Object.values(system.sensors)
-      .map((row) => row.time)
-      .sort()
-      .at(-1) || 'Chưa có dữ liệu',
 )
 const chartData = computed(() => ({
   labels: system.points.map((row) => row.time.slice(11)),

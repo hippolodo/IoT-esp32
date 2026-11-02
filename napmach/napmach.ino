@@ -6,9 +6,9 @@
 #include <stdlib.h>
 #include "AlertCounter.h"
 
-const char* ssid = "Hi";           // Tên Wi-Fi phát từ Laptop
-const char* password = "27112005"; // Mật khẩu Wi-Fi
-const char* mqtt_server = "172.20.10.4"; // IP của Laptop (Broker)
+const char* ssid = "Phan Han(Tang 3)";           // Tên Wi-Fi phát từ Laptop
+const char* password = "68686868"; // Mật khẩu Wi-Fi
+const char* mqtt_server = "192.168.0.102"; // IP của Laptop (Broker)
 const int mqtt_port = 1884;
 
 const char* mqtt_user = "B23DCCN294";
@@ -47,7 +47,8 @@ void sensorTask(void*) {
   unsigned long lastSample = millis() - 2000;
   for (;;) {
     unsigned long current = millis();
-    if (current - lastSample >= 2000) {
+    bool sampled = current - lastSample >= 2000;
+    if (sampled) {
       lastSample = current;
       float temperature = dht.readTemperature();
       float humidity = dht.readHumidity();
@@ -63,21 +64,22 @@ void sensorTask(void*) {
     bool changed[3];
     portENTER_CRITICAL(&stateMux);
     for (int i = 0; i < 3; i++) {
-      // Count one episode on entering a warning, not each physical blink.
-      // Missing readings stop blinking but do not split an existing episode.
+      // Count only fresh samples, never repeated passes through the LED loop.
+      // Identical high readings on consecutive samples each add one alert.
       bool valid = !isnan(readings[i]);
       blinking[i] = valid && readings[i] > thresholds[i];
-      nextCounters[i] = advanceAlertCounter(alertCounters[i], valid, blinking[i]);
+      nextCounters[i] = sampled
+          ? advanceAlertCounter(alertCounters[i], valid, blinking[i])
+          : alertCounters[i];
       changed[i] = nextCounters[i].count != alertCounters[i].count || nextCounters[i].active != alertCounters[i].active;
-      bool newEpisode = nextCounters[i].count > alertCounters[i].count;
-      nextRecords[i] = {nextCounters[i], newEpisode ? readings[i] : lastAlertValues[i],
-                        newEpisode ? thresholds[i] : lastAlertThresholds[i]};
+      bool newAlert = nextCounters[i].count > alertCounters[i].count;
+      nextRecords[i] = {nextCounters[i], newAlert ? readings[i] : lastAlertValues[i],
+                        newAlert ? thresholds[i] : lastAlertThresholds[i]};
       bool on = blinking[i] ? (current % 1000 < 500) : manualOn[i];
       digitalWrite(LED_PINS[i], on ? HIGH : LOW);
     }
     portEXIT_CRITICAL(&stateMux);
-    // Only episode transitions write flash, never each blink or sensor reading.
-    // NVS commits the count and active flag together before MQTT can publish it.
+    // Persist new counts before MQTT can publish them; LED blink phases do not write NVS.
     for (int i = 0; i < 3; i++) {
       if (changed[i] && alertPreferences.putBytes(KEYS[i], &nextRecords[i], sizeof(SavedAlert)) == sizeof(SavedAlert)) {
         portENTER_CRITICAL(&stateMux);

@@ -1,4 +1,5 @@
 const base = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const REQUEST_TIMEOUT_MS = 10000
 let accessToken = globalThis.sessionStorage?.getItem('accessToken') || ''
 
 export function setAccessToken(token) {
@@ -17,6 +18,9 @@ export function expireSession() {
 }
 
 export async function api(path, { query, ...options } = {}) {
+  const requestToken = accessToken
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
   const params = new URLSearchParams()
   Object.entries(query || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') params.set(key, value)
@@ -26,13 +30,14 @@ export async function api(path, { query, ...options } = {}) {
       ...options,
       headers: {
         'Content-Type': 'application/json',
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        ...(requestToken ? { Authorization: `Bearer ${requestToken}` } : {}),
         ...options.headers,
       },
-      signal: options.signal || AbortSignal.timeout(10000),
+      signal,
     })
     const body = await response.json().catch(() => null)
-    if (response.status === 401 && accessToken) {
+    signal.throwIfAborted()
+    if (response.status === 401 && requestToken && requestToken === accessToken) {
       expireSession()
     }
     if (!response.ok || !body?.success) throw new Error(body?.message || `API trả lỗi ${response.status}`)

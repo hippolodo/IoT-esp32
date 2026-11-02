@@ -230,8 +230,8 @@ const controller = new AbortController()
 onMounted(async () => {
   try {
     const [user, sensors] = await Promise.all([
-      api('/api/user/profile', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) }),
-      api('/api/sensors', { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) }),
+      api('/api/user/profile', { signal: controller.signal }),
+      api('/api/sensors', { signal: controller.signal }),
     ])
     profile.value = user
     sensorCount.value = sensors.length

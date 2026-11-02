@@ -30,7 +30,7 @@ export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH
     try {
       const result = await api(path, {
         query: { ...query(), page: currentPage.value - 1, size: itemsPerPage.value },
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]),
+        signal: controller.signal,
       })
       if (!active || id !== sequence) return
       if (result.totalPages > 0 && currentPage.value > result.totalPages) {
