@@ -64,7 +64,7 @@ export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH
     load()
     if (pollIntervalMs > 0) poll = setInterval(load, pollIntervalMs)
     if (eventTopic) unsubscribe = onSystemEvent((event) => {
-      if (event.topic === eventTopic) {
+      if ((Array.isArray(eventTopic) ? eventTopic : [eventTopic]).includes(event.topic)) {
         clearTimeout(timer)
         timer = setTimeout(load, EVENT_DEBOUNCE_MS)
       }

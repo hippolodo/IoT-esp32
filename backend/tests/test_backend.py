@@ -1,4 +1,5 @@
 import hashlib
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -270,7 +271,7 @@ def test_third_led_control_and_sensor_mapping(client, connected):
     assert client.get('/api/history').json()['data']['content'][0]['status'] == 'SUCCESS'
 
 
-def test_alert_counts_snapshots_duplicates_reboot_and_retained(client, connected):
+def test_alert_counts_snapshots_duplicates_and_stale_reset_values(client, connected):
     assert client.get('/api/alert-counts').json()['data'] == {'1': None, '2': None, '3': None}
     connected.handle_message('esp32/leds/alert-counts', '{"led1":5,"led2":0,"led3":12}', retained=True)
     assert client.get('/api/alert-counts').json()['data'] == {'1': 5, '2': 0, '3': 12}
@@ -280,8 +281,112 @@ def test_alert_counts_snapshots_duplicates_reboot_and_retained(client, connected
     connected.handle_message('esp32/led1/status', 'OFF')
     assert client.get('/api/alert-counts').json()['data']['1'] == 5
     connected.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    assert client.get('/api/alert-counts').json()['data'] == {'1': 0, '2': 0, '3': 0}
+    assert client.get('/api/alert-counts').json()['data'] == {'1': 5, '2': 0, '3': 12}
     assert client.get('/api/history').json()['data']['totalElements'] == 0
+
+
+def test_alert_counts_survive_backend_restart_and_keep_counting(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":15,"led2":2,"led3":30}')
+    app = create_app(Settings(database_url=client.app.state.settings.database_url, mqtt_enabled=False))
+    with TestClient(app) as restarted:
+        restarted.headers['Authorization'] = client.headers['Authorization']
+        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 15, '2': 2, '3': 30}
+        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":14,"led2":0,"led3":29}', retained=True)
+        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 15, '2': 2, '3': 30}
+        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":16,"led2":2,"led3":31}')
+        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 16, '2': 2, '3': 31}
+
+
+def test_alert_history_filters_batch_counts_and_duplicate_snapshots(client, connected):
+    from unittest.mock import patch
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":10,"led2":5,"led3":2}')
+    # The first snapshot is a baseline, not an invented history of old events.
+    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 0
+    with patch('app.services.mqtt.now', return_value=datetime(2026, 10, 28, 10, 0, 0)):
+        connected.handle_message('esp32/leds/alert-counts', '{"led1":11,"led2":5,"led3":5}')
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":11,"led2":5,"led3":5}', retained=True)
+    connected.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    page = client.get('/api/history?action=ALERT&status=RECORDED&sort=asc&size=1').json()['data']
+    assert page['totalElements'] == 2 and page['totalPages'] == 2
+    assert page['content'][0]['deviceId'] == 1
+    assert page['content'][0]['alertCount'] == 1 and page['content'][0]['alertTotal'] == 11
+    assert page['content'][0]['userId'] is None
+    rows = client.get('/api/history?action=ALERT&deviceId=3').json()['data']['content']
+    assert len(rows) == 1 and rows[0]['alertCount'] == 3 and rows[0]['alertTotal'] == 5
+    assert client.get('/api/history?action=ALERT&status=SUCCESS').json()['data']['totalElements'] == 0
+    assert client.get('/api/history?action=ON').json()['data']['totalElements'] == 0
+    params = {'action': 'ALERT', 'startTime': '2026-10-28 10', 'endTime': '2026-10-28 10'}
+    assert client.get('/api/history', params=params).json()['data']['totalElements'] == 2
+    assert client.get('/api/history?action=ALERT&startTime=2026-10-27&endTime=2026-10-27').json()['data']['totalElements'] == 0
+    # Automatic records must not block or acknowledge manual commands.
+    assert client.post('/api/devices/control', json={'deviceId': 3, 'status': 1}).status_code == 200
+    connected.handle_message('esp32/led3/status', 'ON')
+    manual = client.get('/api/history?action=ON&deviceId=3&status=SUCCESS').json()['data']['content']
+    assert len(manual) == 1 and manual[0]['alertCount'] is None
+
+
+def test_alert_history_survives_restart(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    service.handle_message('esp32/leds/alert-counts', '{"led1":1,"led2":0,"led3":0}')
+    app = create_app(Settings(database_url=client.app.state.settings.database_url, mqtt_enabled=False))
+    with TestClient(app) as restarted:
+        restarted.headers['Authorization'] = client.headers['Authorization']
+        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":1,"led2":0,"led3":0}', retained=True)
+        page = restarted.get('/api/history?action=ALERT').json()['data']
+        assert page['totalElements'] == 1 and page['content'][0]['alertCount'] == 1
+
+
+def test_alert_history_stores_trigger_values_and_original_threshold(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    payload = {'led1': 1, 'led2': 0, 'led3': 0, 'details': {
+        'led1': {'total': 1, 'value': 32.5, 'threshold': 30},
+    }}
+    service.handle_message('esp32/leds/alert-counts', json.dumps(payload))
+    service.handle_message('esp32/thresholds/temperature/status', '40')
+    service.handle_message('esp32/sensor/data', '{"temperature":20}')
+    row = client.get('/api/history?action=ALERT&deviceId=1').json()['data']['content'][0]
+    assert row['alertValue'] == 32.5 and row['alertThreshold'] == 30
+    service.handle_message('esp32/leds/alert-counts', json.dumps(payload), retained=True)
+    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 1
+    payload.update(led1=4, details={'led1': {'total': 4, 'value': 42, 'threshold': 40}})
+    service.handle_message('esp32/leds/alert-counts', json.dumps(payload))
+    row = client.get('/api/history?action=ALERT&sort=desc').json()['data']['content'][0]
+    assert row['alertCount'] == 3 and row['alertValue'] == 42 and row['alertThreshold'] == 40
+
+
+def test_first_snapshot_with_trigger_detail_records_only_the_known_episode(client):
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', json.dumps({
+        'led1': 8, 'led2': 0, 'led3': 0,
+        'details': {'led1': {'total': 8, 'value': 32, 'threshold': 30}},
+    }))
+    page = client.get('/api/history?action=ALERT').json()['data']
+    assert page['totalElements'] == 1
+    row = page['content'][0]
+    assert row['alertCount'] == 1 and row['alertTotal'] == 8 and row['alertValue'] == 32
+
+
+@pytest.mark.parametrize('detail', [
+    {'total': 9, 'value': 32, 'threshold': 30},
+    {'total': 1, 'value': 30, 'threshold': 30},
+    {'total': 1, 'value': True, 'threshold': 0},
+    {'total': 1, 'value': 70, 'threshold': 60},
+    {'total': 1, 'value': '32', 'threshold': 30},
+    {'total': 1, 'value': float('inf'), 'threshold': 30},
+])
+def test_alert_history_rejects_unrelated_or_invalid_trigger_details(client, detail):
+    import json
+    service = client.app.state.mqtt
+    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+    service.handle_message('esp32/leds/alert-counts', json.dumps({
+        'led1': 1, 'led2': 0, 'led3': 0, 'details': {'led1': detail},
+    }))
+    row = client.get('/api/history?action=ALERT').json()['data']['content'][0]
+    assert row['alertValue'] is None and row['alertThreshold'] is None
+    assert row['alertTotal'] == 1
 
 
 @pytest.mark.parametrize('payload', [

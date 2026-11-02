@@ -64,8 +64,8 @@ test('alert counters restore from API and follow ESP32 snapshots without adding 
     update({ 1: 11, 2: 2, 3: 28 })
     update({ 1: 11, 2: 2, 3: 28 })
     assert.deepEqual(system.alertCounts, { 1: 11, 2: 2, 3: 28 })
-    update({ 1: 0, 2: 0, 3: 0 })
-    assert.deepEqual(system.alertCounts, { 1: 0, 2: 0, 3: 0 })
+    update({ 1: 12, 2: 2, 3: 29 })
+    assert.deepEqual(system.alertCounts, { 1: 12, 2: 2, 3: 29 })
   } finally { stopSystem() }
 })
 

@@ -4,7 +4,7 @@
       <div>
         <h2 class="text-2xl font-bold text-[#1a1d2e]">Lịch Sử Thao Tác Thiết Bị</h2>
         <p class="text-sm text-gray-500 mt-1">
-          Tra cứu thao tác bật/tắt của 3 đèn
+          Tra cứu thao tác bật/tắt và các đợt cảnh báo của 3 đèn
         </p>
       </div>
       <ConnectionStatus />
@@ -48,6 +48,7 @@
               <option value="SUCCESS">SUCCESS</option>
               <option value="FAILED">FAILED</option>
               <option value="PENDING">PENDING</option>
+              <option value="RECORDED">Đã ghi nhận cảnh báo</option>
             </select>
             <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
               <i class="fa-solid fa-chevron-down text-xs"></i>
@@ -66,6 +67,7 @@
               <option value="all">Tất cả hành động</option>
               <option value="ON">BẬT (ON)</option>
               <option value="OFF">TẮT (OFF)</option>
+              <option value="ALERT">CẢNH BÁO</option>
             </select>
             <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
               <i class="fa-solid fa-chevron-down text-xs"></i>
@@ -109,6 +111,7 @@
 
     <p v-if="error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
     <p v-if="loading" role="status" class="mb-3 text-sm text-gray-500">Đang tải lịch sử…</p>
+    <p class="mb-3 text-xs text-gray-500">Cảnh báo ghi theo thời điểm backend nhận số đếm tăng. Khi đồng bộ sau mất mạng, một dòng có thể gồm nhiều đợt. Tổng cũ trước khi bật lưu lịch sử không tạo lại dòng quá khứ.</p>
     <div
       class="bg-white rounded-2xl shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 overflow-hidden"
     >
@@ -130,7 +133,7 @@
                 TRẠNG THÁI THỰC THI
               </th>
               <th class="px-6 py-4 text-[11px] font-bold text-gray-400 uppercase tracking-wider">
-                KẾT QUẢ LỆNH
+                KẾT QUẢ / CẢNH BÁO
               </th>
               <th
                 class="px-6 py-4 text-[11px] font-bold text-gray-400 uppercase tracking-wider"
@@ -146,7 +149,7 @@
                       : 'Đang cũ nhất trước. Bấm để xem mới nhất trước'
                   "
                 >
-                  THỜI GIAN THAO TÁC
+                  THỜI GIAN GHI NHẬN
                   <i
                     :class="['fa-solid', timeSortDirection === 'asc' ? 'fa-arrow-up' : 'fa-arrow-down']"
                     aria-hidden="true"
@@ -205,6 +208,11 @@
                   <span :class="['w-1.5 h-1.5 rounded-full mr-2', log.deviceStatusColor]"></span>
                   {{ log.deviceStatus }}
                 </div>
+                <p v-if="log.isAlert && log.alertValue != null && log.alertThreshold != null" class="mt-1 text-xs text-red-600">
+                  {{ log.alertCount > 1 ? 'Đợt cuối: ' : '' }}{{ log.alertValue }} {{ log.alertUnit }} &gt; {{ log.alertThreshold }} {{ log.alertUnit }}
+                  · Vượt {{ log.alertExcess }} {{ log.alertUnit }}
+                </p>
+                <p v-else-if="log.isAlert" class="mt-1 text-xs text-gray-400">Chưa lưu giá trị lúc vượt</p>
               </td>
 
               <td class="px-6 py-4 text-sm font-medium text-gray-500">
@@ -314,27 +322,35 @@ const {
     endTime: applied.value.time,
     sort: timeSortDirection.value,
   }),
-  '/topic/device-status',
+  ['/topic/device-status', '/topic/history'],
 )
 const paginatedData = computed(() =>
   rows.value.map((row) => {
     const isOn = row.action === 'ON',
-      success = row.status === 'SUCCESS'
+      success = row.status === 'SUCCESS',
+      isAlert = row.action === 'ALERT'
     const device = system.devices.find((device) => device.id === row.deviceId)
     return {
+      isAlert,
+      alertCount: row.alertCount,
+      alertValue: row.alertValue,
+      alertThreshold: row.alertThreshold,
+      alertUnit: { temperature: '°C', humidity: '%', light: 'ADC' }[device?.sensorKey] ?? '',
+      alertExcess: row.alertValue != null && row.alertThreshold != null
+        ? Number((row.alertValue - row.alertThreshold).toFixed(3)) : null,
       id: `#LOG-${row.id}`,
-      userId: row.userId ?? '—',
+      userId: isAlert ? 'Tự động' : row.userId ?? '—',
       deviceName: row.deviceName,
       gpio: device ? `GPIO ${device.controlPin ?? device.pinGpio ?? '—'}` : '—',
-      isIconActive: (success && isOn),
-      action: isOn ? 'BẬT (ON)' : 'TẮT (OFF)',
-      actionClass: isOn ? 'text-emerald-500' : 'text-gray-400',
-      execStatus: row.status,
-      execStatusColor: row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
+      isIconActive: isAlert || (success && isOn),
+      action: isAlert ? 'CẢNH BÁO' : isOn ? 'BẬT (ON)' : 'TẮT (OFF)',
+      actionClass: isAlert ? 'text-red-600' : isOn ? 'text-emerald-500' : 'text-gray-400',
+      execStatus: isAlert ? 'Đã ghi nhận' : row.status,
+      execStatusColor: isAlert || row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
       execStatusTextClass:
-        row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
-      deviceStatus: success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
-      deviceStatusColor: success ? 'bg-emerald-500' : 'bg-gray-300',
+        isAlert || row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
+      deviceStatus: isAlert ? ` Tổng ${row.alertTotal ?? '—'}` : success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
+      deviceStatusColor: isAlert ? 'bg-red-500' : success ? 'bg-emerald-500' : 'bg-gray-300',
       timestamp: row.timestamp,
       date: row.timestamp.split(' ')[0],
       time: row.timestamp.split(' ')[1] || '',

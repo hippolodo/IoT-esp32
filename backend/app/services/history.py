@@ -12,9 +12,11 @@ def history_page(
         raise ValueError("sort phải là asc hoặc desc")
     sql = """
         SELECT h.id, h.device_id, h.user_id, h.action, h.status, h.timestamp,
-               d.name AS device_name
+               d.name AS device_name, a.occurrence_count AS alert_count, a.total AS alert_total,
+               a.trigger_value, a.trigger_threshold
         FROM histories AS h
         LEFT JOIN devices AS d ON d.id = h.device_id
+        LEFT JOIN alert_history_details AS a ON a.history_id = h.id
         WHERE 1 = 1
     """
     params = {}
@@ -25,8 +27,8 @@ def history_page(
         sql += ' AND h.status = :status'
         params['status'] = status
     if action:
-        if action not in {"ON", "OFF"}:
-            raise ValueError("action phải là ON hoặc OFF")
+        if action not in {"ON", "OFF", "ALERT"}:
+            raise ValueError("action phải là ON, OFF hoặc ALERT")
         sql += ' AND h.action = :action'
         params['action'] = action
     if start:

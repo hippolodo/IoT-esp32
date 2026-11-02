@@ -11,11 +11,28 @@ mỗi 2 giây, tiếp tục cảnh báo khi mất mạng. DHT lỗi thì ngừng
 
 Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Mỗi đợt vượt ngưỡng tính
 1 lần, không tăng theo từng nhịp nháy. Giá trị về ngưỡng hoặc thấp hơn rồi vượt
-lại mới tính đợt mới; bật/tắt thủ công không tăng số đếm. Bộ đếm cộng dồn từ khi
-ESP32 khởi động và về 0 khi reset/mất điện. Mất mạng vẫn đếm, kết nối lại sẽ
-gửi số mới nhất. Số đếm cập nhật mỗi 2 giây qua MQTT retained và WebSocket;
+lại mới tính đợt mới; bật/tắt thủ công không tăng số đếm. Bộ đếm và trạng thái đợt
+được lưu vào NVS khi chuyển đợt, không mất khi reset/mất điện. Reset trong lúc
+vẫn vượt ngưỡng không tăng thêm đợt. Mất mạng vẫn đếm; kết nối lại gửi tổng mới nhất.
+Backend lưu tổng từng đèn trong bảng `alert_counts`, không mất khi backend khởi động lại.
+Số đếm cập nhật mỗi 2 giây qua MQTT retained và WebSocket;
 tải lại trang lấy số gần nhất qua `GET /api/alert-counts`.
 Mất dữ liệu DHT tạm thời không tách một đợt cảnh báo thành nhiều đợt.
+
+Action History có hành động **CẢNH BÁO** và trạng thái **Đã ghi nhận cảnh báo**,
+kết hợp được với bộ lọc từng đèn và thời gian. Khi tổng tăng, backend lưu một dòng
+`ALERT/RECORDED`, kèm số đợt tăng và tổng mới trong `alert_history_details`.
+Nếu đồng bộ nhiều đợt sau mất mạng, một dòng ghi `+N đợt`; thời gian là lúc backend
+nhận dữ liệu. Snapshot đầu tiên chỉ thiết lập tổng, không tạo lịch sử giả cho quá khứ.
+Firmware gửi kèm số đo và ngưỡng được chụp tại lúc bắt đầu đợt cảnh báo. Backend
+lưu vào `trigger_value`, `trigger_threshold` trong `alert_history_details` và
+Action History hiển thị số đo, ngưỡng, mức vượt. Dữ liệu cũ để trống nếu chưa có
+hai giá trị này. Nếu một dòng gộp nhiều đợt sau mất mạng, đây là giá trị của đợt cuối.
+Nếu snapshot đầu tiên có chi tiết hợp lệ, chỉ đợt cuối có số đo được ghi nhận,
+không tạo thêm dòng cho các đợt cũ không có chi tiết.
+
+Trước khi chạy backend, tạo bảng bộ đếm bằng lệnh từ thư mục gốc:
+`backend/.venv/Scripts/python.exe backend/migrate_alert_counts.py`.
 
 Với database cũ, cấu hình `MQTT_DEVICE_MAP={"1":"led1","2":"led2","3":"led3"}`
 trong `backend/.env`, rồi chạy `backend/.venv/Scripts/python.exe backend/migrate_live_code.py`
@@ -106,9 +123,9 @@ Tạo database bằng MySQL client:
 CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 ```
 
-Backend tạo các bảng còn thiếu khi khởi động và tạo dữ liệu mẫu nếu từng bảng
-danh mục tương ứng đang rỗng. Các bảng chính là `users`, `devices`, `sensors`,
-`datasensors` và `histories`.
+Backend dùng database đã chuẩn bị sẵn và không tự sửa schema khi khởi động.
+Các bảng chính là `users`, `devices`, `sensors`, `datasensors`, `histories`,
+`auth_sessions` và `alert_counts`. Bảng bộ đếm được tạo bằng migration ở trên.
 
 Cấu hình Mosquitto lắng nghe ở cổng **1884**, cho phép ESP32 kết nối từ mạng LAN,
 và tạo tài khoản MQTT dùng chung trong backend/firmware. Cho phép cổng này qua

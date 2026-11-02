@@ -45,7 +45,6 @@ class MqttService:
         self.thresholds = dict(temperature=35.0, humidity=80.0, light=3000.0)
         self.threshold_confirmed = {key: False for key in SENSOR_KEYS}
         self.threshold_pending = set()
-        self.alert_counts = {led: None for led in ("led1", "led2", "led3")}
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,
                                   client_id=f"iot-python-{uuid.uuid4().hex}")
         if settings.mqtt_username:
@@ -102,11 +101,63 @@ class MqttService:
                 counts = json.loads(payload)
                 if not isinstance(counts, dict) or any(
                     type(counts.get(led)) is not int or not 0 <= counts[led] <= 4294967295
-                    for led in self.alert_counts
+                    for led in ("led1", "led2", "led3")
                 ):
                     raise ValueError("Invalid LED alert counts")
-                self.alert_counts = {led: counts[led] for led in self.alert_counts}
+                # Store cumulative snapshots, never add them or lower a saved total.
+                # Dialect upserts also prevent duplicate rows from concurrent callbacks.
+                new_history = False
+                with self.sessions.begin() as db:
+                    dialect = db.bind.dialect.name
+                    for led in ("led1", "led2", "led3"):
+                        previous = execute_sql(db, 'SELECT total FROM alert_counts WHERE led = :led'
+                                               + (' FOR UPDATE' if dialect == 'mysql' else ''),
+                                               {'led': led}).scalar_one_or_none()
+                        params = {'led': led, 'total': counts[led], 'updated_at': now()}
+                        if dialect == 'mysql':
+                            sql = """INSERT INTO alert_counts (led, total, updated_at)
+                                     VALUES (:led, :total, :updated_at)
+                                     ON DUPLICATE KEY UPDATE
+                                     updated_at = IF(VALUES(total) > total, VALUES(updated_at), updated_at),
+                                     total = GREATEST(total, VALUES(total))"""
+                        else:
+                            sql = """INSERT INTO alert_counts (led, total, updated_at)
+                                     VALUES (:led, :total, :updated_at)
+                                     ON CONFLICT(led) DO UPDATE SET
+                                     total = excluded.total, updated_at = excluded.updated_at
+                                     WHERE excluded.total > alert_counts.total"""
+                        execute_sql(db, sql, params)
+                        device_id = next((key for key, value in self.settings.device_map.items() if value == led), None)
+                        device_exists = device_id is not None and execute_sql(
+                            db, 'SELECT id FROM devices WHERE id = :id', {'id': device_id}).first()
+                        # A first snapshot can describe its last known episode, but not older ones.
+                        detail = counts.get('details', {})
+                        detail = detail.get(led) if isinstance(detail, dict) else None
+                        value = threshold = None
+                        limits = {'led1': 50, 'led2': 100, 'led3': 4095}
+                        if isinstance(detail, dict):
+                            v, t = detail.get('value'), detail.get('threshold')
+                            if (type(detail.get('total')) is int and detail['total'] == counts[led]
+                                and type(v) in (int, float) and type(t) in (int, float)
+                                and math.isfinite(v) and math.isfinite(t) and v > t
+                                and 0 <= t <= limits[led]):
+                                value, threshold = float(v), float(t)
+                        if device_exists and ((previous is not None and counts[led] > previous)
+                                              or (previous is None and value is not None)):
+                            result = execute_sql(db, """
+                                INSERT INTO histories (device_id, user_id, action, status, timestamp)
+                                VALUES (:device_id, NULL, 'ALERT', 'RECORDED', :timestamp)
+                            """, {'device_id': device_id, 'timestamp': params['updated_at']})
+                            execute_sql(db, """
+                                INSERT INTO alert_history_details
+                                    (history_id, occurrence_count, total, trigger_value, trigger_threshold)
+                                VALUES (:history_id, :occurrence_count, :total, :value, :threshold)
+                            """, {'history_id': result.lastrowid, 'occurrence_count': counts[led] - previous if previous is not None else 1,
+                                  'total': counts[led], 'value': value, 'threshold': threshold})
+                            new_history = True
                 self.hub.emit("/topic/alert-counts", self.alert_counts_status())
+                if new_history:
+                    self.hub.emit("/topic/history", {"action": "ALERT"})
             elif topic == "esp32/status":
                 self.esp_online = "STATUS: ONLINE" in payload
                 self.last_seen = monotonic()
@@ -157,8 +208,10 @@ class MqttService:
             self.last_seen = monotonic()
             self.hub.emit("/topic/sensors", clean, recorded_at=date_string(recorded_at))
     def alert_counts_status(self):
-        with self.lock:
-            return {device_id: self.alert_counts[led] for device_id, led in self.settings.device_map.items()}
+        with self.lock, self.sessions() as db:
+            rows = execute_sql(db, 'SELECT led, total FROM alert_counts').mappings().all()
+            counts = {row['led']: row['total'] for row in rows}
+            return {device_id: counts.get(led) for device_id, led in self.settings.device_map.items()}
 
     def threshold_status(self):
         with self.lock:

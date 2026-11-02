@@ -21,6 +21,7 @@ DHT dht(DHTPIN, DHT11);
 WiFiClient wifi;
 PubSubClient client(wifi);
 Preferences preferences;
+Preferences alertPreferences;
 const uint8_t LED_PINS[] = {2, 5, 18};
 const char* KEYS[] = {"temperature", "humidity", "light"};
 const float LIMITS[] = {50, 100, 4095};
@@ -31,6 +32,13 @@ float readings[] = {NAN, NAN, NAN};
 bool manualOn[] = {false, false, false};
 bool blinking[] = {false, false, false};
 AlertCounter alertCounters[3] = {};
+struct SavedAlert {
+  AlertCounter counter;
+  float value;
+  float threshold;
+};
+float lastAlertValues[3] = {NAN, NAN, NAN};
+float lastAlertThresholds[3] = {NAN, NAN, NAN};
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
 unsigned long lastPublish = 0, lastReconnect = 0;
 
@@ -50,29 +58,59 @@ void sensorTask(void*) {
       readings[2] = light;
       portEXIT_CRITICAL(&stateMux);
     }
+    AlertCounter nextCounters[3];
+    SavedAlert nextRecords[3];
+    bool changed[3];
     portENTER_CRITICAL(&stateMux);
     for (int i = 0; i < 3; i++) {
       // Count one episode on entering a warning, not each physical blink.
       // Missing readings stop blinking but do not split an existing episode.
       bool valid = !isnan(readings[i]);
       blinking[i] = valid && readings[i] > thresholds[i];
-      alertCounters[i] = advanceAlertCounter(alertCounters[i], valid, blinking[i]);
+      nextCounters[i] = advanceAlertCounter(alertCounters[i], valid, blinking[i]);
+      changed[i] = nextCounters[i].count != alertCounters[i].count || nextCounters[i].active != alertCounters[i].active;
+      bool newEpisode = nextCounters[i].count > alertCounters[i].count;
+      nextRecords[i] = {nextCounters[i], newEpisode ? readings[i] : lastAlertValues[i],
+                        newEpisode ? thresholds[i] : lastAlertThresholds[i]};
       bool on = blinking[i] ? (current % 1000 < 500) : manualOn[i];
       digitalWrite(LED_PINS[i], on ? HIGH : LOW);
     }
     portEXIT_CRITICAL(&stateMux);
+    // Only episode transitions write flash, never each blink or sensor reading.
+    // NVS commits the count and active flag together before MQTT can publish it.
+    for (int i = 0; i < 3; i++) {
+      if (changed[i] && alertPreferences.putBytes(KEYS[i], &nextRecords[i], sizeof(SavedAlert)) == sizeof(SavedAlert)) {
+        portENTER_CRITICAL(&stateMux);
+        alertCounters[i] = nextCounters[i];
+        lastAlertValues[i] = nextRecords[i].value;
+        lastAlertThresholds[i] = nextRecords[i].threshold;
+        portEXIT_CRITICAL(&stateMux);
+      }
+    }
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
 void publishAlertCounts() {
   uint32_t counts[3];
+  float values[3], limits[3];
   portENTER_CRITICAL(&stateMux);
-  for (int i = 0; i < 3; i++) counts[i] = alertCounters[i].count;
+  for (int i = 0; i < 3; i++) {
+    counts[i] = alertCounters[i].count;
+    values[i] = lastAlertValues[i];
+    limits[i] = lastAlertThresholds[i];
+  }
   portEXIT_CRITICAL(&stateMux);
   String payload = "{\"led1\":" + String(counts[0]) +
                    ",\"led2\":" + String(counts[1]) +
-                   ",\"led3\":" + String(counts[2]) + "}";
+                   ",\"led3\":" + String(counts[2]) + ",\"details\":{";
+  for (int i = 0; i < 3; i++) {
+    if (!isfinite(values[i]) || !isfinite(limits[i])) continue;
+    payload += "\"led" + String(i + 1) + "\":{\"total\":" + String(counts[i]) +
+               ",\"value\":" + String(values[i], 1) + ",\"threshold\":" + String(limits[i], 3) + "},";
+  }
+  if (payload.endsWith(",")) payload.remove(payload.length() - 1);
+  payload += "}}";
   client.publish("esp32/leds/alert-counts", payload.c_str(), true);
 }
 
@@ -132,7 +170,22 @@ void reconnect() {
 void setup() {
   Serial.begin(115200);
   preferences.begin("iot-thresholds", false);
+  alertPreferences.begin("iot-alerts", false);
   for (int i = 0; i < 3; i++) {
+    if (alertPreferences.isKey(KEYS[i])) {
+      size_t size = alertPreferences.getBytesLength(KEYS[i]);
+      if (size == sizeof(SavedAlert)) {
+        SavedAlert saved;
+        if (alertPreferences.getBytes(KEYS[i], &saved, sizeof(saved)) == sizeof(saved)) {
+          alertCounters[i] = saved.counter;
+          lastAlertValues[i] = saved.value;
+          lastAlertThresholds[i] = saved.threshold;
+        }
+      } else if (size == sizeof(AlertCounter)) {
+        // Preserve counters written by the previous firmware version.
+        alertPreferences.getBytes(KEYS[i], &alertCounters[i], sizeof(AlertCounter));
+      }
+    }
     // On first boot the key is absent; keep the default without a failed read.
     if (preferences.isKey(KEYS[i])) {
       float saved = preferences.getFloat(KEYS[i], thresholds[i]);

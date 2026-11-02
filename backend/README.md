@@ -44,7 +44,7 @@ CREATE DATABASE IF NOT EXISTS iot_db CHARACTER SET utf8mb4;
 ## Database cũ
 
 BE dùng database đã chuẩn bị sẵn: `users`, `devices`, `sensors`, `datasensors`,
-`histories`, `auth_sessions`, với đầy đủ cột theo `app/models/`.
+`histories`, `auth_sessions`, `alert_counts`, `alert_history_details`, với đầy đủ cột theo `app/models/`.
 Startup không tạo bảng, không sửa schema và không thêm dữ liệu mặc định.
 Nếu thay đổi cấu trúc database, thực hiện riêng bằng SQL/migration trước khi chạy BE.
 Dữ liệu hiện có được giữ nguyên; các API/MQTT tiếp tục đọc và ghi theo nghiệp vụ.
@@ -122,7 +122,28 @@ lớn hơn ngưỡng và trở lại trạng thái thủ công khi hết vượt
 ACK `ON/OFF` của đèn xác nhận trạng thái công tắc thủ công, không phải nhịp nháy.
 Bộ đếm nhận tổng số từ topic retained `esp32/leds/alert-counts`, ánh xạ led1/2/3
 qua `MQTT_DEVICE_MAP` rồi phát `/topic/alert-counts`. Bản tin lặp không cộng thêm;
-ESP32 reset thì số đếm về 0. Số đếm trong RAM, không lưu lịch sử vào database.
+Tổng được lưu trong bảng `alert_counts` (`led`, `total`, `updated_at`). API đọc từ DB,
+khôi phục được cả khi backend khởi động lại và ESP32 đang offline. Snapshot trùng
+hoặc thấp hơn tổng đã lưu không làm tăng thêm hoặc giảm tổng. ESP32 lưu tổng và
+trạng thái đợt trong NVS nên reset vẫn tiếp tục đếm từ tổng trước đó.
+Tạo bảng một lần bằng `python migrate_alert_counts.py` trong thư mục `backend`;
+lệnh có thể chạy lại, không xóa hay đặt lại số đếm hiện có.
+Migration này cũng tạo `alert_history_details`. Khi tổng tăng sau snapshot đầu tiên,
+backend lưu `histories.action=ALERT`, `status=RECORDED`, `user_id=NULL`, cùng số đợt
+tăng (`occurrence_count`) và tổng mới (`total`) trong bảng chi tiết. Lọc qua
+`/api/history?action=ALERT`, kết hợp `deviceId`, `status=RECORDED` và thời gian.
+Timestamp là thời điểm backend ghi nhận; khi offline nhiều đợt có thể được gộp
+trong một dòng. Không tạo ngược lịch sử quá khứ từ tổng đã có. MQTT trùng/cũ
+không tạo lại dòng lịch sử. Sự kiện `/topic/history` báo frontend tải lại danh sách.
+Payload có thể thêm `details.led1={"total":12,"value":32.5,"threshold":30}` (tương tự
+led2/led3). `total` phải khớp tổng của đèn trong cùng bản tin; giá trị phải hữu hạn
+và lớn hơn ngưỡng hợp lệ. Backend lưu vào `trigger_value`, `trigger_threshold`;
+API trả `alertValue`, `alertThreshold`. Chỉ dùng số đo được chụp lúc bắt đầu đợt,
+không suy ra từ số đo mới nhất hay ngưỡng hiện tại. Firmware cũ vẫn được chấp nhận
+với giá trị null. Dòng gộp nhiều đợt chỉ có số đo của đợt cuối, giao diện ghi rõ.
+Chạy lại `python migrate_alert_counts.py` để bổ sung hai cột cho database hiện có.
+Ngoại lệ cho baseline: snapshot đầu tiên có chi tiết hợp lệ thì ghi đúng 1 đợt
+cuối đã biết số đo, không tạo lịch sử cho các đợt trước không có chi tiết.
 Với database cũ, chạy `python migrate_live_code.py` sau khi cấu hình đủ ba LED
 trong `MQTT_DEVICE_MAP`; script chỉ cập nhật danh mục đèn, giữ dữ liệu đo cũ.
 

@@ -40,12 +40,20 @@ Tác vụ riêng đọc cảm biến mỗi 2 giây và nháy đèn cả khi mấ
 Ngưỡng được lưu qua Preferences/NVS; không mất khi reset. Khi DHT11 lỗi, hai
 đèn nhiệt độ/độ ẩm trở về trạng thái thủ công cho tới khi đọc hợp lệ trở lại.
 
-Mỗi đèn có bộ đếm cảnh báo riêng trong RAM, tăng 1 khi bắt đầu một đợt vượt
+Mỗi đèn có bộ đếm cảnh báo riêng, tăng 1 khi bắt đầu một đợt vượt
 ngưỡng. Nháy liên tục vẫn là 1 đợt; chỉ khi giá trị về ngưỡng hoặc thấp hơn rồi
 vượt lại mới tăng tiếp. Lỗi DHT tạm thời không chia đợt cảnh báo. Bật/tắt thủ công
-không được tính. Bộ đếm về 0 khi ESP32 khởi động lại;
+không được tính. Tổng và trạng thái đợt được lưu chung trong một blob NVS,
+namespace `iot-alerts`, chỉ ghi khi bắt đầu/kết thúc đợt. Sau reset/mất điện,
+ESP32 khôi phục tổng và trạng thái; đang vượt ngưỡng không bị tính thêm đợt.
 mất Wi-Fi/MQTT vẫn đếm. Topic retained `esp32/leds/alert-counts` gửi tổng số hiện tại
 `{"led1":5,"led2":0,"led3":12}` mỗi 2 giây và ngay khi kết nối lại.
+Payload thêm `details` cho từng đèn có cảnh báo: tổng tương ứng, số đo và ngưỡng
+tại lúc bắt đầu đợt gần nhất. Các giá trị này được lưu chung với bộ đếm trong NVS,
+không bị thay bằng số đo hiện tại khi cảnh báo kết thúc hoặc ngưỡng được chỉnh.
+Firmware đọc được bộ đếm NVS của bản cũ và giữ nguyên tổng khi nâng cấp.
+Backend lưu tổng vào MySQL. Nạp firmware bình thường giữ NVS; thao tác erase flash
+sẽ xóa dữ liệu trên ESP32, vì vậy không dùng erase flash khi cần giữ bộ đếm.
 
 Topic `esp32/thresholds/{temperature|humidity|light}/control` nhận số ngưỡng;
 topic tương ứng `/status` trả ngưỡng đã lưu. Cả cấu hình và xác nhận đều retained.

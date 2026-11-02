@@ -30,6 +30,13 @@ class Sensor(Base):
     module: Mapped[str | None] = mapped_column(String(255))
 
 
+class AlertCount(Base):
+    __tablename__ = "alert_counts"
+    led: Mapped[str] = mapped_column(String(8), primary_key=True)
+    total: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=now)
+
+
 class DataSensor(Base):
     __tablename__ = "datasensors"
     id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
@@ -48,6 +55,15 @@ class History(Base):
     status: Mapped[str | None] = mapped_column(String(255))
     timestamp: Mapped[datetime | None] = mapped_column(DateTime, default=now)
     device: Mapped[Device | None] = relationship(lazy="joined")
+
+
+class AlertHistoryDetail(Base):
+    __tablename__ = "alert_history_details"
+    history_id: Mapped[int] = mapped_column(ForeignKey("histories.id"), primary_key=True)
+    occurrence_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    trigger_value: Mapped[float | None] = mapped_column(Float(precision=53))
+    trigger_threshold: Mapped[float | None] = mapped_column(Float(precision=53))
 
 
 class User(Base):

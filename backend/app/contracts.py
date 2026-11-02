@@ -84,7 +84,9 @@ def data_dict(row):
 
 def history_dict(row):
     return dict(id=row['id'], userId=row['user_id'], deviceId=row['device_id'], deviceName=row['device_name'],
-                action=row['action'], status=row['status'], timestamp=date_string(row['timestamp']))
+                action=row['action'], status=row['status'], timestamp=date_string(row['timestamp']),
+                alertCount=row['alert_count'], alertTotal=row['alert_total'],
+                alertValue=row['trigger_value'], alertThreshold=row['trigger_threshold'])
 
 
 def parse_date(value):
