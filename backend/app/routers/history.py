@@ -7,6 +7,7 @@ from ..services import history as service
 router = APIRouter()
 
 
+# GET /api/history: tra cứu lịch sử điều khiển/cảnh báo với bộ lọc, sort và phân trang.
 @router.get('/api/history', tags=['Lịch sử'], dependencies=[Depends(current_session)])
 def history(
     deviceId: int | None = None,
@@ -33,6 +34,7 @@ def history(
     return envelope(result, 'Lấy lịch sử thành công')
 
 
+# GET /api/history/filter: lọc lịch sử theo tham số của endpoint cũ.
 @router.get('/api/history/filter', tags=['Lịch sử'], dependencies=[Depends(current_session)])
 def filter_history(
     deviceId: int | None = None,

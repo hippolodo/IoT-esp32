@@ -7,24 +7,28 @@ from ..services import sensors as service
 router = APIRouter()
 
 
+# GET /api/sensors: trả danh mục các cảm biến được hỗ trợ.
 @router.get('/api/sensors', tags=['Cảm biến'], dependencies=[Depends(current_session)])
 def sensors(db: Session = Depends(database)):
     result = service.sensors(db=db)
     return envelope(result, 'Lấy danh sách cảm biến thành công')
 
 
+# GET /api/sensors/latest: lấy số đo mới nhất từ DB để Dashboard có REST snapshot.
 @router.get('/api/sensors/latest', tags=['Cảm biến'], dependencies=[Depends(current_session)])
 def latest(db: Session = Depends(database)):
     result = service.latest(db=db)
     return envelope(result, 'Lấy dữ liệu cảm biến gần đây thành công')
 
 
+# GET /api/sensors/chart: lấy tối đa 30 mốc dữ liệu lịch sử cho biểu đồ.
 @router.get('/api/sensors/chart', tags=['Cảm biến'], dependencies=[Depends(current_session)])
 def sensor_chart(limit: int = 30, db: Session = Depends(database)):
     result = service.sensor_chart(limit=limit, db=db)
     return envelope(result, 'Lấy lịch sử biểu đồ thành công')
 
 
+# GET /api/sensors/data: chuyển bộ lọc và phân trang sang service tra cứu số đo.
 @router.get('/api/sensors/data', tags=['Cảm biến'], dependencies=[Depends(current_session)])
 def sensor_data(
     sensorId: int | None = None,
@@ -49,6 +53,7 @@ def sensor_data(
     return envelope(result, 'Lấy dữ liệu cảm biến thành công')
 
 
+# GET /api/sensors/filter: giữ endpoint lọc số đo tương thích với API cũ.
 @router.get('/api/sensors/filter', tags=['Cảm biến'], dependencies=[Depends(current_session)])
 def filter_sensors(
     type: str,

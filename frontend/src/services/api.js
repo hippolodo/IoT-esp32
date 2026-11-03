@@ -2,37 +2,52 @@ const base = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/$/, '')
 const REQUEST_TIMEOUT_MS = 10000
 let accessToken = globalThis.sessionStorage?.getItem('accessToken') || ''
 
+// Lưu token trong bộ nhớ và sessionStorage; token rỗng thì xóa phiên phía trình duyệt.
 export function setAccessToken(token) {
   accessToken = token || ''
   if (accessToken) globalThis.sessionStorage?.setItem('accessToken', accessToken)
   else globalThis.sessionStorage?.removeItem('accessToken')
 }
 
+// Lấy token hiện tại để gửi bản tin xác thực khi mở WebSocket.
 export function getAccessToken() {
   return accessToken
 }
 
+// Xóa token và báo App.vue quay về màn đăng nhập khi phiên hết hạn.
 export function expireSession() {
   setAccessToken('')
   globalThis.dispatchEvent?.(new Event('auth-expired'))
 }
 
+// Hàm HTTP dùng chung: ghép URL/query, thêm Bearer token và timeout 10 giây.
+// Trả body.data nếu thành công; lỗi HTTP/nghiệp vụ được ném về catch của nơi gọi.
 export async function api(path, { query, ...options } = {}) {
   const requestToken = accessToken
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
+  let signal
+  if (options.signal) {
+    signal = AbortSignal.any([options.signal, timeout])
+  } else {
+    signal = timeout
+  }
   const params = new URLSearchParams()
   Object.entries(query || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') params.set(key, value)
   })
+  let url = `${base}${path}`
+  if (params.size) {
+    url += `?${params}`
+  }
+  const headers = { 'Content-Type': 'application/json' }
+  if (requestToken) {
+    headers.Authorization = `Bearer ${requestToken}`
+  }
+  Object.assign(headers, options.headers)
   try {
-    const response = await fetch(`${base}${path}${params.size ? `?${params}` : ''}`, {
+    const response = await fetch(url, {
       ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(requestToken ? { Authorization: `Bearer ${requestToken}` } : {}),
-        ...options.headers,
-      },
+      headers,
       signal,
     })
     const body = await response.json().catch(() => null)
@@ -50,8 +65,13 @@ export async function api(path, { query, ...options } = {}) {
   }
 }
 
+// Tạo URL /ws theo backend đã cấu hình; trang HTTPS dùng wss, còn HTTP dùng ws.
 export function websocketUrl() {
   const url = new URL(`${base}/ws`, window.location.origin)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+  if (url.protocol === 'https:') {
+    url.protocol = 'wss:'
+  } else {
+    url.protocol = 'ws:'
+  }
   return url.toString()
 }

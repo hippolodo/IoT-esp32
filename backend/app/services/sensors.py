@@ -10,12 +10,16 @@ MEASUREMENTS_SQL = """
 """
 
 
+# Lấy danh mục ba loại cảm biến nhiệt độ, độ ẩm, ánh sáng.
 def sensors(db: Session):
     rows = execute_sql(db, "SELECT * FROM sensors WHERE UPPER(type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT') ORDER BY id ASC").mappings().all()
     return [sensor_dict(row) for row in rows]
 
 
+# Lấy số đo mới nhất của từng cảm biến theo recorded_at, rồi ID nếu trùng thời gian.
+# rows là kết quả SQL; data_dict chuyển từng dòng thành dữ liệu cho /api/sensors/latest.
 def latest(db: Session):
+    # Truy vấn con tìm ID mới nhất từng sensor; mappings().all() trả các dòng đọc bằng tên cột.
     rows = execute_sql(db, MEASUREMENTS_SQL + """
         WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT') AND ds.id = (
             SELECT newest.id FROM datasensors AS newest
@@ -27,6 +31,8 @@ def latest(db: Session):
     return [data_dict(row) for row in rows]
 
 
+# Chọn tối đa limit mốc giây mới nhất, lấy số đo thuộc các mốc đó để vẽ biểu đồ.
+# Ghép thành {time, temperature, humidity, light}; trả từ cũ đến mới, không bịa số đo thiếu.
 def sensor_chart(db: Session, limit: int = 30):
     if not 1 <= limit <= 30:
         raise ValueError("limit phải từ 1 đến 30")
@@ -51,6 +57,7 @@ def sensor_chart(db: Session, limit: int = 30):
         WHERE UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')
         ORDER BY ds.recorded_at ASC, ds.id ASC
     """, {'limit': limit}).mappings().all()
+    # Mỗi khóa là một mốc giây, ghép ba loại cảm biến vào cùng một điểm biểu đồ.
     points = {}
     for row in rows:
         point = points.setdefault(row['sample_time'], {'time': row['sample_time']})
@@ -58,6 +65,7 @@ def sensor_chart(db: Session, limit: int = 30):
     return list(points.values())
 
 
+# Lọc lịch sử số đo theo cảm biến, loại, giá trị và khoảng thời gian rồi phân trang.
 def sensor_data(
     db: Session,
     sensorId: int | None = None,
@@ -87,6 +95,7 @@ def sensor_data(
     return paginate(db, sql, params, page, size, data_dict)
 
 
+# Endpoint lọc tương thích API cũ: bắt buộc loại và hai mốc thời gian, gồm cả hai đầu.
 def filter_sensors(
     db: Session, type: str, startDate: str, endDate: str, page: int = 0, size: int = 10,
 ):

@@ -8,6 +8,7 @@ from ..services import auth as service
 router = APIRouter()
 
 
+# POST /api/auth/register: chuyển dữ liệu đã kiểm tra sang service đăng ký, trả HTTP 201.
 @router.post('/api/auth/register', status_code=201, tags=['Xác thực'])
 def register(
     body: RegisterRequest,
@@ -18,18 +19,21 @@ def register(
     return envelope(result, 'Đăng ký tài khoản thành công. Vui lòng đăng nhập.', code=201)
 
 
+# POST /api/auth/login: kiểm tra thông tin và trả accessToken để frontend gọi API tiếp.
 @router.post('/api/auth/login', tags=['Xác thực'])
 def login(body: LoginRequest, db: Session = Depends(database)):
     result = service.login(body=body, db=db)
     return envelope(result, 'Đăng nhập thành công')
 
 
+# POST /api/auth/logout: thu hồi phiên đã được xác thực của request này.
 @router.post('/api/auth/logout', tags=['Xác thực'])
 def logout(session: dict = Depends(current_session), db: Session = Depends(database)):
     result = service.logout(session=session, db=db)
     return envelope(result, 'Đã đăng xuất')
 
 
+# GET /api/user/profile: trả hồ sơ của tài khoản đang đăng nhập.
 @router.get('/api/user/profile', tags=['Người dùng'])
 def profile(user: dict = Depends(current_user)):
     result = service.profile(user=user)

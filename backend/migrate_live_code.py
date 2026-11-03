@@ -5,6 +5,7 @@ from app.models import Device
 from app.contracts import now
 
 
+# Chạy thủ công để thêm/cập nhật danh mục ba LED theo MQTT_DEVICE_MAP, giữ lịch sử và số đo.
 def migrate():
     settings = Settings()
     engine, sessions = make_database(settings.database_url)

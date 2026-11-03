@@ -42,9 +42,7 @@
               type="text"
               v-model="searchValue"
               @keyup.enter="handleSearch"
-              :placeholder="
-                searchType === 'TIME' ? 'VD: 2026-10-18 hoặc 2026-10-18 17:30' : 'VD: 28.4, 66, 400...'
-              "
+              :placeholder="searchPlaceholder"
               class="block w-full pl-9 pr-4 py-2.5 text-sm border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white transition-colors"
             />
           </div>
@@ -119,7 +117,7 @@
       <div class="px-6 py-4 bg-gray-50/50 border-t border-gray-100 flex items-center justify-between">
         <div class="flex items-center space-x-6">
           <span class="text-[11px] font-semibold text-gray-400">
-            Hiển thị trang {{ total === 0 ? 0 : currentPage }} / {{ totalPages }} (Tổng {{ total }} bản ghi)
+            Hiển thị trang <template v-if="total === 0">0</template><template v-else>{{ currentPage }}</template> / {{ totalPages }} (Tổng {{ total }} bản ghi)
           </span>
 
           <div class="flex items-center space-x-2">
@@ -154,9 +152,7 @@
             @click="goToPage(page)"
             :class="[
               'w-7 h-7 flex items-center justify-center text-xs rounded-md transition-colors',
-              currentPage === page
-                ? 'font-bold bg-blue-600 text-white shadow-sm'
-                : 'font-bold text-gray-500 hover:bg-gray-100',
+              pageButtonClass(page),
             ]"
           >
             {{ page }}
@@ -182,6 +178,13 @@ import { usePage } from '../composables/usePage'
 const searchType = ref('all'),
   searchValue = ref('')
 const applied = ref({ type: 'all', value: '' })
+const searchPlaceholder = computed(() => {
+  if (searchType.value === 'TIME') {
+    return 'VD: 2026-10-18 hoặc 2026-10-18 17:30'
+  } else {
+    return 'VD: 28.4, 66, 400...'
+  }
+})
 const {
   rows,
   currentPage,
@@ -200,12 +203,19 @@ const {
   '/api/sensors/data',
   () => {
     const { type, value } = applied.value
-    return {
-      sensorType: ['all', 'TIME'].includes(type) ? undefined : type,
-      value: type !== 'TIME' ? value : undefined,
-      startTime: type === 'TIME' && value ? value : undefined,
-      endTime: type === 'TIME' && value ? value : undefined,
+    const query = {}
+    if (!['all', 'TIME'].includes(type)) {
+      query.sensorType = type
     }
+    if (type === 'TIME') {
+      if (value) {
+        query.startTime = value
+        query.endTime = value
+      }
+    } else {
+      query.value = value
+    }
+    return query
   },
   '/topic/sensors',
 )
@@ -214,21 +224,37 @@ const styles = {
   HUMIDITY: ['fa-droplet', 'bg-blue-100 text-blue-600 border-blue-200/50'],
   LIGHT: ['fa-sun', 'bg-indigo-100 text-indigo-600 border-indigo-200/50'],
 }
+// Chuyển các dòng API của trang hiện tại thành tên, icon, giá trị/đơn vị để hiển thị bảng.
 const paginatedData = computed(() =>
   rows.value.map((row) => {
     const type = row.sensorType.toUpperCase()
     const [icon, typeClass] = styles[type] || ['fa-gauge', 'bg-gray-100 text-gray-600']
+    let unit
+    if (type === 'LIGHT') {
+      unit = 'ADC'
+    } else {
+      unit = row.unit
+    }
     return {
       id: row.id,
       name: row.sensorName,
       type,
       icon,
       typeClass,
-      value: `${row.value} ${type === 'LIGHT' ? 'ADC' : row.unit}`,
+      value: `${row.value} ${unit}`,
       time: row.recordedAt,
     }
   }),
 )
+
+function pageButtonClass(page) {
+  if (currentPage.value === page) {
+    return 'font-bold bg-blue-600 text-white shadow-sm'
+  } else {
+    return 'font-bold text-gray-500 hover:bg-gray-100'
+  }
+}
+// Chốt bộ lọc đang nhập, chuẩn hóa thời gian và tải lại từ trang 1.
 const handleSearch = () => {
   applied.value = {
     type: searchType.value,
@@ -237,6 +263,7 @@ const handleSearch = () => {
   currentPage.value = 1
   load()
 }
+// Xóa bộ lọc trên form rồi tải lại danh sách mặc định.
 const handleReset = () => {
   searchType.value = 'all'
   searchValue.value = ''

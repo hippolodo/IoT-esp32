@@ -111,7 +111,7 @@
 
     <p v-if="error" role="alert" class="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
     <p v-if="loading" role="status" class="mb-3 text-sm text-gray-500">Đang tải lịch sử…</p>
-    <p class="mb-3 text-xs text-gray-500">Mỗi lần đo vượt ngưỡng tính 1 cảnh báo, kể cả giá trị không đổi. Lịch sử ghi theo thời điểm backend nhận số đếm tăng; một dòng có thể gộp nhiều lần đo và chỉ có số đo vượt ngưỡng cuối cùng.</p>
+    <p class="mb-3 text-xs text-gray-500">Mỗi số đo vượt ngưỡng được backend lưu thành công tạo 1 bản ghi cảnh báo và tăng tổng 1 lần. Không có dữ liệu khi mất kết nối thì không đếm, không tạo lịch sử bù. Các dòng gộp chỉ thuộc dữ liệu cũ.</p>
     <div
       class="bg-white rounded-2xl shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-gray-100 overflow-hidden"
     >
@@ -137,21 +137,17 @@
               </th>
               <th
                 class="px-6 py-4 text-[11px] font-bold text-gray-400 uppercase tracking-wider"
-                :aria-sort="timeSortDirection === 'asc' ? 'ascending' : 'descending'"
+                :aria-sort="timeSortAria"
               >
                 <button
                   type="button"
                   @click="toggleTimeSort"
                   class="inline-flex items-center gap-2 hover:text-blue-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500 rounded"
-                  :title="
-                    timeSortDirection === 'desc'
-                      ? 'Đang mới nhất trước. Bấm để xem cũ nhất trước'
-                      : 'Đang cũ nhất trước. Bấm để xem mới nhất trước'
-                  "
+                  :title="timeSortTitle"
                 >
                   THỜI GIAN GHI NHẬN
                   <i
-                    :class="['fa-solid', timeSortDirection === 'asc' ? 'fa-arrow-up' : 'fa-arrow-down']"
+                    :class="['fa-solid', timeSortIcon]"
                     aria-hidden="true"
                   ></i>
                 </button>
@@ -175,9 +171,7 @@
                   <div
                     :class="[
                       'w-8 h-8 rounded-full flex items-center justify-center border',
-                      log.isIconActive
-                        ? 'bg-blue-50 text-blue-500 border-transparent'
-                        : 'bg-gray-50 text-gray-400 border-gray-100',
+                      historyIconClass(log.isIconActive),
                     ]"
                   >
                     <i class="fa-regular fa-lightbulb text-sm"></i>
@@ -202,14 +196,14 @@
                 <div
                   :class="[
                     'flex items-center text-xs font-bold',
-                    log.isIconActive ? 'text-gray-700' : 'text-gray-400',
+                    historyResultClass(log.isIconActive),
                   ]"
                 >
                   <span :class="['w-1.5 h-1.5 rounded-full mr-2', log.deviceStatusColor]"></span>
                   {{ log.deviceStatus }}
                 </div>
                 <p v-if="log.isAlert && log.alertValue != null && log.alertThreshold != null" class="mt-1 text-xs text-red-600">
-                  {{ log.alertCount > 1 ? 'Lần cuối: ' : '' }}{{ log.alertValue }} {{ log.alertUnit }} &gt; {{ log.alertThreshold }} {{ log.alertUnit }}
+                  <template v-if="log.alertCount > 1">Lần cuối: </template>{{ log.alertValue }} {{ log.alertUnit }} &gt; {{ log.alertThreshold }} {{ log.alertUnit }}
                   · Vượt {{ log.alertExcess }} {{ log.alertUnit }}
                 </p>
                 <p v-else-if="log.isAlert" class="mt-1 text-xs text-gray-400">Chưa lưu giá trị lúc vượt</p>
@@ -231,7 +225,7 @@
       <div class="px-6 py-4 bg-white border-t border-gray-100 flex items-center justify-between">
         <div class="flex items-center space-x-6">
           <span class="text-[11px] font-semibold text-gray-400">
-            Hiển thị trang {{ total === 0 ? 0 : currentPage }} / {{ totalPages }} (Tổng {{ total }} bản ghi)
+            Hiển thị trang <template v-if="total === 0">0</template><template v-else>{{ currentPage }}</template> / {{ totalPages }} (Tổng {{ total }} bản ghi)
           </span>
 
           <div class="flex items-center space-x-2">
@@ -265,9 +259,7 @@
             @click="goToPage(page)"
             :class="[
               'w-7 h-7 flex items-center justify-center text-xs rounded-md transition-colors',
-              currentPage === page
-                ? 'font-bold bg-blue-600 text-white shadow-sm'
-                : 'font-bold text-gray-500 hover:bg-gray-100',
+              pageButtonClass(page),
             ]"
           >
             {{ page }}
@@ -298,6 +290,27 @@ const searchDevice = ref('all'),
   searchTime = ref('')
 const applied = ref({ device: 'all', status: 'all', action: 'all', time: '' })
 const timeSortDirection = ref('desc')
+const timeSortAria = computed(() => {
+  if (timeSortDirection.value === 'asc') {
+    return 'ascending'
+  } else {
+    return 'descending'
+  }
+})
+const timeSortTitle = computed(() => {
+  if (timeSortDirection.value === 'desc') {
+    return 'Đang mới nhất trước. Bấm để xem cũ nhất trước'
+  } else {
+    return 'Đang cũ nhất trước. Bấm để xem mới nhất trước'
+  }
+})
+const timeSortIcon = computed(() => {
+  if (timeSortDirection.value === 'asc') {
+    return 'fa-arrow-up'
+  } else {
+    return 'fa-arrow-down'
+  }
+})
 const {
   rows,
   currentPage,
@@ -314,52 +327,125 @@ const {
   prevPage,
 } = usePage(
   '/api/history',
-  () => ({
-    deviceId: applied.value.device === 'all' ? undefined : applied.value.device,
-    status: applied.value.status === 'all' ? undefined : applied.value.status,
-    action: applied.value.action === 'all' ? undefined : applied.value.action,
-    startTime: applied.value.time,
-    endTime: applied.value.time,
-    sort: timeSortDirection.value,
-  }),
+  () => {
+    const query = {
+      startTime: applied.value.time,
+      endTime: applied.value.time,
+      sort: timeSortDirection.value,
+    }
+    if (applied.value.device !== 'all') {
+      query.deviceId = applied.value.device
+    }
+    if (applied.value.status !== 'all') {
+      query.status = applied.value.status
+    }
+    if (applied.value.action !== 'all') {
+      query.action = applied.value.action
+    }
+    return query
+  },
   ['/topic/device-status', '/topic/history'],
 )
+// Đổi dòng lịch sử API thành nội dung giao diện: hành động, trạng thái, GPIO và chi tiết vượt ngưỡng.
 const paginatedData = computed(() =>
   rows.value.map((row) => {
     const isOn = row.action === 'ON',
       success = row.status === 'SUCCESS',
       isAlert = row.action === 'ALERT'
     const device = system.devices.find((device) => device.id === row.deviceId)
-    return {
+    let alertExcess = null
+    if (row.alertValue != null && row.alertThreshold != null) {
+      alertExcess = Number((row.alertValue - row.alertThreshold).toFixed(3))
+    }
+    const log = {
       isAlert,
       alertCount: row.alertCount,
       alertValue: row.alertValue,
       alertThreshold: row.alertThreshold,
       alertUnit: { temperature: '°C', humidity: '%', light: 'ADC' }[device?.sensorKey] ?? '',
-      alertExcess: row.alertValue != null && row.alertThreshold != null
-        ? Number((row.alertValue - row.alertThreshold).toFixed(3)) : null,
+      alertExcess,
       id: `#LOG-${row.id}`,
-      userId: isAlert ? 'Tự động' : row.userId ?? '—',
+      userId: row.userId ?? '—',
       deviceName: row.deviceName,
-      gpio: device ? `GPIO ${device.controlPin ?? device.pinGpio ?? '—'}` : '—',
+      gpio: '—',
       isIconActive: isAlert || (success && isOn),
-      action: isAlert ? 'CẢNH BÁO' : isOn ? 'BẬT (ON)' : 'TẮT (OFF)',
-      actionClass: isAlert ? 'text-red-600' : isOn ? 'text-emerald-500' : 'text-gray-400',
-      execStatus: isAlert ? 'Đã ghi nhận' : row.status,
-      execStatusColor: isAlert || row.status === 'PENDING' ? 'bg-amber-500' : success ? 'bg-emerald-500' : 'bg-red-500',
-      execStatusTextClass:
-        isAlert || row.status === 'PENDING' ? 'text-amber-600' : success ? 'text-gray-700' : 'text-red-500',
-      deviceStatus: isAlert ? `+${row.alertCount ?? 1} lần · Tổng ${row.alertTotal ?? '—'}` : success ? (isOn ? 'BẬT' : 'TẮT') : 'Chưa xác nhận',
-      deviceStatusColor: isAlert ? 'bg-red-500' : success ? 'bg-emerald-500' : 'bg-gray-300',
+      action: 'TẮT (OFF)',
+      actionClass: 'text-gray-400',
+      execStatus: row.status,
+      execStatusColor: 'bg-red-500',
+      execStatusTextClass: 'text-red-500',
+      deviceStatus: 'Chưa xác nhận',
+      deviceStatusColor: 'bg-gray-300',
       timestamp: row.timestamp,
       date: row.timestamp.split(' ')[0],
       time: row.timestamp.split(' ')[1] || '',
     }
+    if (device) {
+      log.gpio = `GPIO ${device.controlPin ?? device.pinGpio ?? '—'}`
+    }
+
+    // Chọn nội dung riêng cho cảnh báo tự động và thao tác bật/tắt.
+    if (isAlert) {
+      log.userId = 'Tự động'
+      log.action = 'CẢNH BÁO'
+      log.actionClass = 'text-red-600'
+      log.execStatus = 'Đã ghi nhận'
+      log.deviceStatus = `+${row.alertCount ?? 1} lần · Tổng ${row.alertTotal ?? '—'}`
+      log.deviceStatusColor = 'bg-red-500'
+    } else if (isOn) {
+      log.action = 'BẬT (ON)'
+      log.actionClass = 'text-emerald-500'
+    }
+
+    if (isAlert || row.status === 'PENDING') {
+      log.execStatusColor = 'bg-amber-500'
+      log.execStatusTextClass = 'text-amber-600'
+    } else if (success) {
+      log.execStatusColor = 'bg-emerald-500'
+      log.execStatusTextClass = 'text-gray-700'
+    }
+
+    if (!isAlert && success) {
+      if (isOn) {
+        log.deviceStatus = 'BẬT'
+      } else {
+        log.deviceStatus = 'TẮT'
+      }
+      log.deviceStatusColor = 'bg-emerald-500'
+    }
+    return log
   }),
 )
+// Các màu giao diện được chọn riêng bằng if/else để template dễ đọc.
+function historyIconClass(isActive) {
+  if (isActive) {
+    return 'bg-blue-50 text-blue-500 border-transparent'
+  } else {
+    return 'bg-gray-50 text-gray-400 border-gray-100'
+  }
+}
+
+function historyResultClass(isActive) {
+  if (isActive) {
+    return 'text-gray-700'
+  } else {
+    return 'text-gray-400'
+  }
+}
+
+function pageButtonClass(page) {
+  if (currentPage.value === page) {
+    return 'font-bold bg-blue-600 text-white shadow-sm'
+  } else {
+    return 'font-bold text-gray-500 hover:bg-gray-100'
+  }
+}
+
+// Đổi thiết bị thì xóa lựa chọn trạng thái/hành động trên form; bấm Lọc mới áp dụng.
 const resetDeviceFilters = () => {
   searchStatus.value = searchAction.value = 'all'
 }
+// Chép bộ lọc vào applied, chuẩn hóa thời gian và gửi lại API từ trang đầu.
 const handleSearch = () => {
   applied.value = {
     device: searchDevice.value,
@@ -370,13 +456,19 @@ const handleSearch = () => {
   currentPage.value = 1
   load()
 }
+// Đặt các bộ lọc về tất cả rồi tải lại lịch sử.
 const handleReset = () => {
   searchDevice.value = searchStatus.value = searchAction.value = 'all'
   searchTime.value = ''
   handleSearch()
 }
+// Đảo thứ tự thời gian asc/desc và yêu cầu backend sắp xếp lại trước khi phân trang.
 const toggleTimeSort = () => {
-  timeSortDirection.value = timeSortDirection.value === 'desc' ? 'asc' : 'desc'
+  if (timeSortDirection.value === 'desc') {
+    timeSortDirection.value = 'asc'
+  } else {
+    timeSortDirection.value = 'desc'
+  }
   currentPage.value = 1
   load()
 }

@@ -4,7 +4,6 @@
 #include <Preferences.h>
 #include "DHT.h"
 #include <stdlib.h>
-#include "AlertCounter.h"
 
 const char* ssid = "Phan Han(Tang 3)";           // Tên Wi-Fi phát từ Laptop
 const char* password = "68686868"; // Mật khẩu Wi-Fi
@@ -21,7 +20,6 @@ DHT dht(DHTPIN, DHT11);
 WiFiClient wifi;
 PubSubClient client(wifi);
 Preferences preferences;
-Preferences alertPreferences;
 const uint8_t LED_PINS[] = {2, 5, 18};
 const char* KEYS[] = {"temperature", "humidity", "light"};
 const float LIMITS[] = {50, 100, 4095};
@@ -31,22 +29,21 @@ float thresholds[] = {35, 80, 3000};
 float readings[] = {NAN, NAN, NAN};
 bool manualOn[] = {false, false, false};
 bool blinking[] = {false, false, false};
-AlertCounter alertCounters[3] = {};
-struct SavedAlert {
-  AlertCounter counter;
-  float value;
-  float threshold;
-};
-float lastAlertValues[3] = {NAN, NAN, NAN};
-float lastAlertThresholds[3] = {NAN, NAN, NAN};
+// Ngưỡng được chụp cùng số đo để backend biết đúng ngưỡng của mẫu đó.
+float sampleThresholds[] = {35, 80, 3000};
+uint32_t sampleVersion = 0;
+uint32_t lastPublishedSample = 0;
 portMUX_TYPE stateMux = portMUX_INITIALIZER_UNLOCKED;
-unsigned long lastPublish = 0, lastReconnect = 0;
+unsigned long lastReconnect = 0;
 
 // Sampling and blinking keep running while MQTT/Wi-Fi reconnects.
+// Tác vụ riêng đọc cảm biến mỗi 2 giây và nháy LED cả khi mất mạng.
+// Không đếm trên mạch: chỉ backend nhận/lưu số đo mới được ghi nhận cảnh báo.
 void sensorTask(void*) {
   unsigned long lastSample = millis() - 2000;
   for (;;) {
     unsigned long current = millis();
+    // Chỉ có mẫu mới mỗi 2 giây
     bool sampled = current - lastSample >= 2000;
     if (sampled) {
       lastSample = current;
@@ -57,78 +54,59 @@ void sensorTask(void*) {
       readings[0] = temperature;
       readings[1] = humidity;
       readings[2] = light;
+      for (int i = 0; i < 3; i++) sampleThresholds[i] = thresholds[i];
+      sampleVersion++;
       portEXIT_CRITICAL(&stateMux);
     }
-    AlertCounter nextCounters[3];
-    SavedAlert nextRecords[3];
-    bool changed[3];
     portENTER_CRITICAL(&stateMux);
     for (int i = 0; i < 3; i++) {
-      // Count only fresh samples, never repeated passes through the LED loop.
-      // Identical high readings on consecutive samples each add one alert.
       bool valid = !isnan(readings[i]);
-      blinking[i] = valid && readings[i] > thresholds[i];
-      nextCounters[i] = sampled
-          ? advanceAlertCounter(alertCounters[i], valid, blinking[i])
-          : alertCounters[i];
-      changed[i] = nextCounters[i].count != alertCounters[i].count || nextCounters[i].active != alertCounters[i].active;
-      bool newAlert = nextCounters[i].count > alertCounters[i].count;
-      nextRecords[i] = {nextCounters[i], newAlert ? readings[i] : lastAlertValues[i],
-                        newAlert ? thresholds[i] : lastAlertThresholds[i]};
-      bool on = blinking[i] ? (current % 1000 < 500) : manualOn[i];
-      digitalWrite(LED_PINS[i], on ? HIGH : LOW);
-    }
-    portEXIT_CRITICAL(&stateMux);
-    // Persist new counts before MQTT can publish them; LED blink phases do not write NVS.
-    for (int i = 0; i < 3; i++) {
-      if (changed[i] && alertPreferences.putBytes(KEYS[i], &nextRecords[i], sizeof(SavedAlert)) == sizeof(SavedAlert)) {
-        portENTER_CRITICAL(&stateMux);
-        alertCounters[i] = nextCounters[i];
-        lastAlertValues[i] = nextRecords[i].value;
-        lastAlertThresholds[i] = nextRecords[i].threshold;
-        portEXIT_CRITICAL(&stateMux);
+      if (valid) {
+        if (readings[i] > thresholds[i]) {
+          blinking[i] = true;
+        } else {
+          blinking[i] = false;
+        }
+      } else {
+        blinking[i] = false;
+      }
+      bool on;
+      if (blinking[i]) {
+        on = current % 1000 < 500;
+      } else {
+        on = manualOn[i];
+      }
+      if (on) {
+        digitalWrite(LED_PINS[i], HIGH);
+      } else {
+        digitalWrite(LED_PINS[i], LOW);
       }
     }
+    portEXIT_CRITICAL(&stateMux);
     vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
 
-void publishAlertCounts() {
-  uint32_t counts[3];
-  float values[3], limits[3];
-  portENTER_CRITICAL(&stateMux);
-  for (int i = 0; i < 3; i++) {
-    counts[i] = alertCounters[i].count;
-    values[i] = lastAlertValues[i];
-    limits[i] = lastAlertThresholds[i];
-  }
-  portEXIT_CRITICAL(&stateMux);
-  String payload = "{\"led1\":" + String(counts[0]) +
-                   ",\"led2\":" + String(counts[1]) +
-                   ",\"led3\":" + String(counts[2]) + ",\"details\":{";
-  for (int i = 0; i < 3; i++) {
-    if (!isfinite(values[i]) || !isfinite(limits[i])) continue;
-    payload += "\"led" + String(i + 1) + "\":{\"total\":" + String(counts[i]) +
-               ",\"value\":" + String(values[i], 1) + ",\"threshold\":" + String(limits[i], 3) + "},";
-  }
-  if (payload.endsWith(",")) payload.remove(payload.length() - 1);
-  payload += "}}";
-  client.publish("esp32/leds/alert-counts", payload.c_str(), true);
-}
-
+// Gửi ngưỡng hiện tại của cảm biến i lên topic /status để backend xác nhận cấu hình.
 void publishThreshold(int i) {
   String topic = "esp32/thresholds/" + String(KEYS[i]) + "/status";
   client.publish(topic.c_str(), String(thresholds[i], 3).c_str(), true);
 }
 
+// Đổi thiết lập công tắc của đèn i và gửi ON/OFF; cảnh báo vẫn ưu tiên nhịp LED thực tế.
 void setManual(int i, bool on) {
   portENTER_CRITICAL(&stateMux);
   manualOn[i] = on;
   portEXIT_CRITICAL(&stateMux);
   // ON/OFF acknowledges the manual setting; warning overrides the physical pin.
-  client.publish(STATUS_TOPICS[i], on ? "ON" : "OFF", true);
+  if (on) {
+    client.publish(STATUS_TOPICS[i], "ON", true);
+  } else {
+    client.publish(STATUS_TOPICS[i], "OFF", true);
+  }
 }
 
+// PubSubClient gọi khi có bản tin: kiểm tra ngưỡng để áp dụng/lưu NVS, hoặc nhận lệnh ON/OFF.
 void callback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (unsigned int i = 0; i < length; i++) message += (char)payload[i];
@@ -141,6 +119,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
       portENTER_CRITICAL(&stateMux);
       thresholds[i] = value;
       portEXIT_CRITICAL(&stateMux);
+      // Ghi ngưỡng để dùng lại sau reset, sau đó gửi /status xác nhận giá trị đang dùng.
       preferences.putFloat(KEYS[i], value);
       publishThreshold(i);
       return;
@@ -153,6 +132,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
+// Khi có Wi-Fi, kết nối broker với Last Will offline, subscribe lại và công bố trạng thái hiện tại.
 void reconnect() {
   if (WiFi.status() != WL_CONNECTED) return;
   String id = "ESP32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
@@ -163,31 +143,20 @@ void reconnect() {
     client.subscribe(CONTROL_TOPICS[i], 1);
     String topic = "esp32/thresholds/" + String(KEYS[i]) + "/control";
     client.subscribe(topic.c_str(), 1);
-    client.publish(STATUS_TOPICS[i], manualOn[i] ? "ON" : "OFF", true);
+    if (manualOn[i]) {
+      client.publish(STATUS_TOPICS[i], "ON", true);
+    } else {
+      client.publish(STATUS_TOPICS[i], "OFF", true);
+    }
     publishThreshold(i);
   }
-  publishAlertCounts();
 }
 
+// Chạy một lần khi khởi động: đọc NVS, cấu hình chân/thư viện, tạo tác vụ và bắt đầu Wi-Fi/MQTT.
 void setup() {
   Serial.begin(115200);
   preferences.begin("iot-thresholds", false);
-  alertPreferences.begin("iot-alerts", false);
   for (int i = 0; i < 3; i++) {
-    if (alertPreferences.isKey(KEYS[i])) {
-      size_t size = alertPreferences.getBytesLength(KEYS[i]);
-      if (size == sizeof(SavedAlert)) {
-        SavedAlert saved;
-        if (alertPreferences.getBytes(KEYS[i], &saved, sizeof(saved)) == sizeof(saved)) {
-          alertCounters[i] = saved.counter;
-          lastAlertValues[i] = saved.value;
-          lastAlertThresholds[i] = saved.threshold;
-        }
-      } else if (size == sizeof(AlertCounter)) {
-        // Preserve counters written by the previous firmware version.
-        alertPreferences.getBytes(KEYS[i], &alertCounters[i], sizeof(AlertCounter));
-      }
-    }
     // On first boot the key is absent; keep the default without a failed read.
     if (preferences.isKey(KEYS[i])) {
       float saved = preferences.getFloat(KEYS[i], thresholds[i]);
@@ -210,6 +179,7 @@ void setup() {
   client.setSocketTimeout(1);
 }
 
+// Mỗi mẫu mới chỉ gửi một lần nếu đang có MQTT; mẫu khi offline bị bỏ, không gửi bù.
 void loop() {
   unsigned long current = millis();
   if (!client.connected() && current - lastReconnect >= 2000) {
@@ -217,23 +187,35 @@ void loop() {
     reconnect();
   }
   if (client.connected()) client.loop();
-  if (current - lastPublish >= 2000) {
-    lastPublish = current;
-    float values[3];
-    portENTER_CRITICAL(&stateMux);
-    for (int i = 0; i < 3; i++) values[i] = readings[i];
-    portEXIT_CRITICAL(&stateMux);
+
+  float values[3], limits[3];
+  uint32_t version;
+  portENTER_CRITICAL(&stateMux);
+  version = sampleVersion;
+  for (int i = 0; i < 3; i++) {
+    values[i] = readings[i];
+    limits[i] = sampleThresholds[i];
+  }
+  portEXIT_CRITICAL(&stateMux);
+
+  if (version != lastPublishedSample) {
+    // Kể cả offline cũng đánh dấu đã xử lý; không có hàng đợi mẫu cũ để cộng bù.
+    lastPublishedSample = version;
     String payload = "{";
     for (int i = 0; i < 3; i++) {
       if (!isnan(values[i])) payload += "\"" + String(KEYS[i]) + "\":" + String(values[i], 1) + ",";
     }
     if (isnan(values[0]) || isnan(values[1])) payload += "\"error\":\"Loi doc DHT11!\",";
-    if (payload.endsWith(",")) payload.remove(payload.length() - 1);
-    payload += "}";
+    payload += "\"thresholds\":{";
+    for (int i = 0; i < 3; i++) {
+      if (i > 0) payload += ",";
+      payload += "\"" + String(KEYS[i]) + "\":" + String(limits[i], 3);
+    }
+    payload += "}}";
     Serial.println(payload);
     if (client.connected()) {
+      // QoS 0, không retained: backend chỉ thống kê mẫu trực tiếp nhận được.
       client.publish("esp32/sensor/data", payload.c_str());
-      publishAlertCounts();
     }
   }
   delay(5);

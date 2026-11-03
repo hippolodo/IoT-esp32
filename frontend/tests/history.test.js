@@ -19,6 +19,8 @@ test('Action History renders visible manual and alert filter options', async () 
       system: { devices: [{ id: 1, name: 'LED 1' }] },
       searchDevice: 'all', searchStatus: 'all', searchAction: 'all', searchTime: '',
       loading: false, error: '', timeSortDirection: 'desc',
+      timeSortAria: 'descending', timeSortTitle: 'Đang mới nhất trước. Bấm để xem cũ nhất trước',
+      timeSortIcon: 'fa-arrow-down',
       paginatedData: [
         { id: 'LOG-1', userId: 'AUTO', deviceName: 'LED 1', gpio: 'GPIO 2',
           isIconActive: true, action: 'ALERT', actionClass: '', execStatusTextClass: '',
@@ -34,6 +36,7 @@ test('Action History renders visible manual and alert filter options', async () 
       currentPage: 1, total: 0, totalPages: 0, itemsPerPage: 10, visiblePages: [],
       resetDeviceFilters: noop, handleSearch: noop, handleReset: noop,
       toggleTimeSort: noop, handleSizeChange: noop, prevPage: noop, nextPage: noop, goToPage: noop,
+      historyIconClass: noop, historyResultClass: noop, pageButtonClass: noop,
     }),
   })
   const html = await renderToString(app)

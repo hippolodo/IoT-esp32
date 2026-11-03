@@ -26,6 +26,7 @@ class Settings:
     cors_origins: list[str] = field(default_factory=lambda: os.getenv(
         "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(","))
 
+    # Kiểm tra ánh xạ device ID -> LED và timeout ngay sau khi đọc cấu hình.
     def __post_init__(self):
         if not set(self.device_map.values()) <= {"led1", "led2", "led3"}:
             raise ValueError("MQTT_DEVICE_MAP chỉ hỗ trợ led1, led2 và led3")

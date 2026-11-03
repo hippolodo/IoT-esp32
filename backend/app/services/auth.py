@@ -12,6 +12,7 @@ from ..passwords import hash_password, verify_password
 SESSION_LIFETIME = timedelta(hours=24)
 
 
+# Băm token, tra phiên trong DB và kiểm tra hạn dùng; thiếu/sai/hết hạn thì trả lỗi 401.
 def authenticate_token(token, db: Session):
     if not isinstance(token, str) or not token:
         raise ControlError("Vui lòng đăng nhập để tiếp tục", 401)
@@ -26,6 +27,7 @@ def authenticate_token(token, db: Session):
     return dict(session)
 
 
+# Lấy tài khoản theo ID của phiên đã xác thực; không tìm thấy thì báo 401.
 def get_user(user_id, db: Session):
     row = execute_sql(db, "SELECT * FROM users WHERE id = :id", {'id': user_id}).mappings().first()
     if row is None:
@@ -33,6 +35,7 @@ def get_user(user_id, db: Session):
     return dict(row)
 
 
+# Chuẩn hóa và kiểm tra thông tin đăng ký, chống trùng username/email rồi lưu hash mật khẩu.
 def register(body: RegisterRequest, db: Session, registration_lock):
     username = body.username.strip().lower()
     full_name = body.fullName.strip()
@@ -71,6 +74,7 @@ def register(body: RegisterRequest, db: Session, registration_lock):
     return dict(userId=user_id, username=username, fullName=full_name, email=email)
 
 
+# Kiểm tra tài khoản/mật khẩu, tạo token ngẫu nhiên và lưu hash token với hạn dùng 24 giờ.
 def login(body: LoginRequest, db: Session):
     if not body.username:
         raise ControlError("Username không được để trống", 400)
@@ -92,6 +96,7 @@ def login(body: LoginRequest, db: Session):
                 email=user['email'], success=True, message="Đăng nhập thành công")
 
 
+# Xóa đúng phiên đang đăng nhập khỏi DB để token đó không dùng tiếp được.
 def logout(session: dict, db: Session):
     execute_sql(db, "DELETE FROM auth_sessions WHERE token_hash = :token_hash",
                 {'token_hash': session['token_hash']})
@@ -99,11 +104,17 @@ def logout(session: dict, db: Session):
     return "OK"
 
 
+# Chọn các trường hồ sơ được phép trả về; không đưa password_hash ra frontend.
 def profile(user: dict):
+    if user['created_at']:
+        created_at = as_datetime(user['created_at']).isoformat()
+    else:
+        created_at = None
     return dict(id=user['id'], username=user['username'], fullName=user['full_name'], email=user['email'],
-                createdAt=as_datetime(user['created_at']).isoformat() if user['created_at'] else None)
+                createdAt=created_at)
 
 
+# Mở Session ngắn để kiểm tra token WebSocket; trả True/False thay vì lỗi nghiệp vụ.
 def websocket_session_valid(token, sessions):
     with sessions() as db:
         try:

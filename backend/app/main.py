@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 COMMAND_CHECK_INTERVAL_SECONDS = 1
 
 
+# Tạo ứng dụng FastAPI, nối database/MQTT/EventHub và đăng ký các router.
+# Trả app riêng cho mỗi lần khởi tạo để các test không dùng nhầm trạng thái.
 def create_app(settings=None):
     settings = settings or Settings()
     engine, sessions = make_database(settings.database_url)
@@ -22,6 +24,7 @@ def create_app(settings=None):
     mqtt = MqttService(settings, sessions, hub)
     registration_lock = threading.Lock()
 
+    # Chạy nền mỗi giây, chuyển lệnh PENDING quá hạn sang FAILED và phát sự kiện.
     async def expire_commands():
         while True:
             await asyncio.sleep(COMMAND_CHECK_INTERVAL_SECONDS)
@@ -30,6 +33,7 @@ def create_app(settings=None):
             except Exception:
                 log.exception('Failed to expire pending commands')
 
+    # Khởi động MQTT và tác vụ nền khi mở backend; dọn tài nguyên khi tắt backend.
     @asynccontextmanager
     async def lifespan(app):
         hub.loop = asyncio.get_running_loop()

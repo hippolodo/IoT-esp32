@@ -5,6 +5,7 @@ from ..schemas import DeviceControlRequest
 from .mqtt import MqttService
 
 
+# Đổi dòng SQL thành thiết bị API, thêm GPIO điều khiển, cảm biến liên quan và pending.
 def device_response(row, db: Session, settings):
     result = device_dict(row)
     led = settings.device_map.get(row['id'])
@@ -18,11 +19,13 @@ def device_response(row, db: Session, settings):
     return result
 
 
+# Lấy danh sách thiết bị từ DB và bổ sung khả năng điều khiển theo MQTT_DEVICE_MAP.
 def devices(db: Session, settings):
     rows = execute_sql(db, "SELECT * FROM devices ORDER BY id ASC").mappings().all()
     return [device_response(row, db, settings) for row in rows]
 
 
+# Chỉ nhận trạng thái 0/1 rồi chuyển lệnh kèm người thực hiện sang MqttService.
 def control(body: DeviceControlRequest, user: dict, mqtt: MqttService):
     if body.status not in (0, 1):
         raise ControlError("Status phải là 0 (OFF) hoặc 1 (ON)", 400)
@@ -31,6 +34,7 @@ def control(body: DeviceControlRequest, user: dict, mqtt: MqttService):
     return "OK"
 
 
+# Lấy một thiết bị theo ID; không tồn tại thì trả lỗi 404.
 def device(id: int, db: Session, settings):
     row = execute_sql(db, "SELECT * FROM devices WHERE id = :id", {'id': id}).mappings().first()
     if row is None:

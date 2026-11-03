@@ -21,16 +21,14 @@
         @click="$emit('change-view', item.view)"
         :class="[
           'w-full flex items-center space-x-4 px-4 py-3.5 rounded-xl transition-all duration-200 group',
-          activeView === item.view
-            ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20'
-            : 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200',
+          navigationClass(item.view),
         ]"
       >
         <i
           :class="[
             item.icon,
             'text-lg transition-colors',
-            activeView === item.view ? 'text-white' : 'text-gray-500 group-hover:text-gray-300',
+            navigationIconClass(item.view),
           ]"
         ></i>
         <span class="text-sm font-semibold">{{ item.label }}</span>
@@ -41,7 +39,7 @@
 
 <script setup>
 // Khai báo props nhận dữ liệu từ App.vue để biết đang ở màn hình nào
-defineProps({
+const props = defineProps({
   activeView: {
     type: String,
     default: 'dashboard',
@@ -50,6 +48,23 @@ defineProps({
 
 // Khai báo emits để gửi tín hiệu lên App.vue khi user bấm đổi tab
 defineEmits(['change-view'])
+
+// Chọn màu cho mục điều hướng đang mở và các mục còn lại.
+function navigationClass(view) {
+  if (props.activeView === view) {
+    return 'bg-blue-600 text-white shadow-lg shadow-blue-900/20'
+  } else {
+    return 'text-gray-400 hover:bg-gray-800/50 hover:text-gray-200'
+  }
+}
+
+function navigationIconClass(view) {
+  if (props.activeView === view) {
+    return 'text-white'
+  } else {
+    return 'text-gray-500 group-hover:text-gray-300'
+  }
+}
 
 const navigation = [
   { view: 'dashboard', label: 'Home Dashboard', icon: 'fa-solid fa-border-all' },

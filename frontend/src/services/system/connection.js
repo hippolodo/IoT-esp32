@@ -19,6 +19,7 @@ let chartController,
   chartHistoryLoaded = false
 
 // A captured session stays invalid after stop/start, even if fetch finishes late.
+// Chụp phiên đồng bộ hiện tại: signal để hủy request, isCurrent để chặn kết quả phiên cũ.
 export function captureSystemSession() {
   const controller = sessionController
   return {
@@ -27,11 +28,13 @@ export function captureSystemSession() {
   }
 }
 
+// Hủy request thuộc phiên trước và tạo phiên mới mỗi khi start/stop hệ thống.
 function renewSystemSession() {
   sessionController.abort()
   sessionController = new AbortController()
 }
 
+// Ghép các nhóm điểm theo cùng mốc giây, giữ giá trị hợp lệ và tối đa 30 điểm mới nhất.
 function mergeChartPoints(...groups) {
   const points = new Map()
   for (const row of groups.flat()) {
@@ -46,6 +49,8 @@ function mergeChartPoints(...groups) {
   return [...points.values()].sort((a, b) => a.time.localeCompare(b.time)).slice(-MAX_CHART_POINTS)
 }
 
+// Gọi GET /api/sensors/chart?limit=30 rồi đưa lịch sử vào system.points.
+// Giữ điểm realtime đến trong lúc chờ; request cũ hoặc phiên đã dừng không được ghi store.
 export async function refreshChartHistory() {
   const session = captureSystemSession()
   chartController?.abort()
@@ -71,6 +76,8 @@ export async function refreshChartHistory() {
   }
 }
 
+// values là object như {temperature: 35}, time là thời gian số đo từ API hoặc WebSocket.
+// Lưu thành system.sensors.temperature = {value: 35, time}; bỏ số lỗi và dữ liệu cũ hơn.
 function sensorValues(values, time) {
   for (const key of SENSOR_KEYS) {
     if (
@@ -82,6 +89,7 @@ function sensorValues(values, time) {
   }
 }
 
+// Gọi GET /api/devices để cập nhật trạng thái/pending; tránh response cũ ghi đè sự kiện mới.
 export async function refreshDevices() {
   const session = captureSystemSession()
   const sequence = ++deviceSequence,
@@ -90,12 +98,16 @@ export async function refreshDevices() {
   if (session.isCurrent() && sequence === deviceSequence && revision === eventRevision) system.devices = devices
 }
 
+// Lấy song song trạng thái kết nối, thiết bị, số đo mới nhất, ngưỡng và tổng cảnh báo.
+// Chạy khi khởi động và mỗi 5 giây; chỉ cập nhật nếu vẫn thuộc phiên đang hoạt động.
 export async function refreshSystem() {
   if (refreshing?.isCurrent()) return
   const session = captureSystemSession()
   refreshing = session
   try {
+    // Ghi phiên bản sự kiện trước request; có WebSocket mới thì không ghi đè bằng snapshot này.
     const revision = eventRevision
+    // Kết quả thứ ba lưu vào latest; bỏ kết quả thứ hai vì refreshDevices tự cập nhật store.
     const [status, , latest, thresholds, alertCounts] = await Promise.all([
       api('/api/system/status', { signal: session.signal }),
       refreshDevices(),
@@ -108,6 +120,7 @@ export async function refreshSystem() {
     if (revision === eventRevision) Object.assign(system, status)
     if (revision === eventRevision) applyThresholds(thresholds)
     if (revision === eventRevision) system.alertCounts = alertCounts
+    // row là một số đo API; TEMPERATURE đổi thành temperature, recordedAt được truyền làm time.
     latest.forEach((row) => sensorValues({
       [row.sensorType.toLowerCase()]: row.value,
     }, row.recordedAt))
@@ -124,6 +137,7 @@ export async function refreshSystem() {
   }
 }
 
+// Nhận /topic/sensors: cập nhật số đo, lỗi DHT và thêm điểm realtime vào biểu đồ.
 function handleSensorEvent(event) {
   const time = event.recordedAt || new Date().toLocaleString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
   sensorValues(event.data, time)
@@ -133,6 +147,7 @@ function handleSensorEvent(event) {
   system.points = mergeChartPoints(system.points, [{ time, ...event.data }])
 }
 
+// Nhận ACK/timeout của đèn, cập nhật trạng thái rồi lấy lại danh sách để đồng bộ pending.
 function handleDeviceEvent(event) {
   const session = captureSystemSession()
   const device = system.devices.find((row) => row.id === event.data.deviceId)
@@ -144,6 +159,7 @@ function handleDeviceEvent(event) {
   })
 }
 
+// Đọc JSON từ WebSocket và chuyển từng topic đến đúng phần cập nhật store.
 function handleSocketMessage(data) {
   let event
   try {
@@ -172,6 +188,8 @@ function handleSocketMessage(data) {
   emitSystemEvent(event)
 }
 
+// Mở WebSocket, gửi token ở bản tin đầu; mất kết nối thì thử lại sau 3 giây.
+// Đóng với mã 4401 nghĩa là phiên không hợp lệ, cần quay về đăng nhập.
 function connect(session = captureSystemSession()) {
   if (!running || !session.isCurrent()) return
   const connection = new WebSocket(websocketUrl())
@@ -196,6 +214,7 @@ function connect(session = captureSystemSession()) {
   connection.onerror = () => connection.close()
 }
 
+// App.vue gọi sau đăng nhập/khôi phục phiên: lấy snapshot, mở socket và bật polling.
 export function startSystem() {
   if (running) return
   renewSystemSession()
@@ -210,6 +229,7 @@ export function startSystem() {
   }, SYSTEM_REFRESH_MS)
 }
 
+// Dừng polling/reconnect, hủy request và đóng socket để phiên cũ không cập nhật giao diện.
 export function stopSystem() {
   running = false
   renewSystemSession()

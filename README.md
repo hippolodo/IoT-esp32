@@ -9,30 +9,33 @@ Khi giá trị về ngưỡng hoặc thấp hơn, đèn trở về trạng thái
 Ngưỡng mặc định: 35 °C, 80 %, 3000 ADC. ESP32 lưu ngưỡng trong NVS và đọc cảm biến
 mỗi 2 giây, tiếp tục cảnh báo khi mất mạng. DHT lỗi thì ngừng cảnh báo nhiệt độ/độ ẩm.
 
-Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Mỗi lần đọc cảm biến
-có giá trị lớn hơn ngưỡng tính 1 lần (chu kỳ đọc 2 giây), kể cả giá trị không đổi.
-Ví dụ ngưỡng 30 °C, hai lần đọc liên tiếp đều là 35 °C thì tăng 2 lần.
-Nhịp nháy đèn, thao tác bật/tắt thủ công và mẫu DHT lỗi không cộng số đếm.
-Bộ đếm được lưu vào NVS khi thay đổi; sau reset, lần đọc mới vượt ngưỡng vẫn tăng tiếp.
-Mất mạng vẫn đếm; kết nối lại gửi tổng mới nhất. Backend lưu tổng từng đèn trong
-bảng `alert_counts`, không mất khi backend khởi động lại. Số đếm cập nhật mỗi 2 giây
-qua MQTT retained và WebSocket; tải lại trang lấy số gần nhất qua `GET /api/alert-counts`.
-Tổng cũ được giữ nguyên khi nâng cấp firmware, không chuyển ngược thành số lần đo.
+Dashboard hiển thị số lần cảnh báo riêng của từng đèn. Backend nhận số đo trực tiếp
+qua MQTT, so sánh với ngưỡng ESP32 gửi kèm và ghi một history `ALERT/RECORDED`
+cho mỗi mẫu vượt ngưỡng. Lưu số đo, lịch sử và tăng tổng trong `alert_counts` là
+cùng một transaction: ghi lỗi thì rollback toàn bộ, không tăng số đếm.
+Hai mẫu liên tiếp đều là 35 °C với ngưỡng 30 °C sẽ tạo 2 history và cộng 2.
 
-Action History có hành động **CẢNH BÁO** và trạng thái **Đã ghi nhận cảnh báo**,
-kết hợp được với bộ lọc từng đèn và thời gian. Khi tổng tăng, backend lưu một dòng
-`ALERT/RECORDED`, kèm số lần đo vượt ngưỡng tăng và tổng mới trong `alert_history_details`.
-Nếu đồng bộ nhiều lần sau mất mạng, một dòng ghi `+N lần`; thời gian là lúc backend
-nhận dữ liệu. Snapshot đầu tiên chỉ thiết lập tổng, không tạo lịch sử giả cho quá khứ.
-Firmware gửi kèm số đo và ngưỡng được chụp tại lần đo vượt ngưỡng gần nhất. Backend
-lưu vào `trigger_value`, `trigger_threshold` trong `alert_history_details` và
-Action History hiển thị số đo, ngưỡng, mức vượt. Dữ liệu cũ để trống nếu chưa có
-hai giá trị này. Nếu một dòng gộp nhiều lần đo sau mất mạng, đây là giá trị của lần đo cuối.
-Nếu snapshot đầu tiên có chi tiết hợp lệ, chỉ lần đo cuối có số đo được ghi nhận,
-không tạo thêm dòng cho các lần đo cũ không có chi tiết.
+ESP32 vẫn tự nháy cảnh báo khi mất mạng nhưng không giữ bộ đếm trong RAM/NVS.
+Mẫu không gửi được không có lịch sử và không được đếm bù khi kết nối lại.
+MQTT số đo dùng QoS 0, không retained; backend bỏ qua snapshot retained và topic
+tổng đếm `esp32/leds/alert-counts` của firmware cũ. Mất broker, backend hoặc database
+thì không ghi nhận được cảnh báo mới. Đây là thống kê các mẫu được lưu thành công,
+không phải số lần đèn nháy vật lý.
 
-Trước khi chạy backend, tạo bảng bộ đếm bằng lệnh từ thư mục gốc:
-`backend/.venv/Scripts/python.exe backend/migrate_alert_counts.py`.
+Frontend nhận tổng mới qua WebSocket `/topic/alert-counts`, sự kiện `/topic/history`
+báo tải lại lịch sử. Tải lại trang lấy tổng qua `GET /api/alert-counts`, chưa có thì 0.
+`alert_history_details` lưu `occurrence_count=1`, tổng mới và số đo/ngưỡng của mẫu đó.
+Các dòng lịch sử gộp của phiên bản cũ được giữ nguyên để tra cứu.
+
+Khi chuyển từ cách đếm cũ, dừng backend và chạy từ thư mục gốc:
+
+```powershell
+backend/.venv/Scripts/python.exe backend/migrate_alert_counts.py
+```
+
+Migration tạo/bổ sung bảng cảnh báo và tính lại tổng từ các lần đã có lịch sử,
+loại phần tổng cũ không có bản ghi tương ứng; không xóa lịch sử hoặc số đo.
+Sau đó khởi động lại backend và nạp firmware mới. Ngưỡng vẫn được lưu trong NVS.
 
 Với database cũ, cấu hình `MQTT_DEVICE_MAP={"1":"led1","2":"led2","3":"led3"}`
 trong `backend/.env`, rồi chạy `backend/.venv/Scripts/python.exe backend/migrate_live_code.py`
@@ -268,7 +271,7 @@ upload khi đã cắm mạch. Hướng dẫn Arduino IDE và xử lý IntelliSen
 Ví dụ dữ liệu cảm biến:
 
 ```json
-{"temperature":28.5,"humidity":65.0,"light":1500}
+{"temperature":28.5,"humidity":65.0,"light":1500,"thresholds":{"temperature":35,"humidity":80,"light":3000}}
 ```
 
 Backend ghi lệnh điều khiển ở trạng thái `PENDING`, cập nhật thành `SUCCESS` khi

@@ -9,19 +9,19 @@
       @click="copy"
     >
       <i
-        :class="copied ? 'fa-solid fa-check text-emerald-600' : 'fa-regular fa-copy'"
+        :class="copyIconClass"
         aria-hidden="true"
       ></i>
     </button>
     <span
       role="status"
-      :class="['text-xs', copied ? 'text-emerald-600' : 'text-red-600']"
+      :class="['text-xs', messageClass]"
     >{{ message }}</span>
   </span>
 </template>
 
 <script setup>
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 
 const props = defineProps({ text: { type: String, required: true } })
 const copying = ref(false)
@@ -29,7 +29,24 @@ const copied = ref(false)
 const message = ref('')
 let resetTimer
 
+const copyIconClass = computed(() => {
+  if (copied.value) {
+    return 'fa-solid fa-check text-emerald-600'
+  } else {
+    return 'fa-regular fa-copy'
+  }
+})
+
+const messageClass = computed(() => {
+  if (copied.value) {
+    return 'text-emerald-600'
+  } else {
+    return 'text-red-600'
+  }
+})
+
 // Hỗ trợ cả trang HTTP trong mạng LAN khi Clipboard API không khả dụng.
+// Cách sao chép dự phòng cho HTTP/LAN: chọn textarea tạm rồi khôi phục focus sau khi copy.
 function copyWithSelection(text) {
   const previousFocus = document.activeElement
   const field = document.createElement('textarea')
@@ -47,6 +64,7 @@ function copyWithSelection(text) {
   }
 }
 
+// Sao chép timestamp bằng Clipboard API hoặc cách dự phòng, báo kết quả rồi tự xóa thông báo.
 async function copy() {
   if (copying.value) return
   clearTimeout(resetTimer)

@@ -40,23 +40,20 @@ Tác vụ riêng đọc cảm biến mỗi 2 giây và nháy đèn cả khi mấ
 Ngưỡng được lưu qua Preferences/NVS; không mất khi reset. Khi DHT11 lỗi, hai
 đèn nhiệt độ/độ ẩm trở về trạng thái thủ công cho tới khi đọc hợp lệ trở lại.
 
-Mỗi đèn có bộ đếm cảnh báo riêng. Mỗi lần đọc cảm biến hợp lệ có giá trị lớn
-hơn ngưỡng cộng 1, kể cả hai lần đọc liên tiếp giống nhau. Ví dụ ngưỡng 30 °C,
-hai lần đọc đều 35 °C thì tổng tăng 2. Cảm biến đọc mỗi 2 giây; vòng lặp LED
-chạy mỗi 10 ms và nhịp nháy không tự cộng thêm. Bằng hoặc thấp hơn ngưỡng,
-DHT lỗi và bật/tắt thủ công không cộng số đếm.
+ESP32 không đếm và không lưu bộ đếm cảnh báo trong NVS. Mỗi 2 giây, tác vụ cảm biến
+chụp số đo và ngưỡng tương ứng; vòng lặp chính gửi mỗi mẫu mới tối đa một lần khi
+MQTT đang kết nối. Mẫu offline bị bỏ, không xếp hàng hoặc gửi tổng để cộng bù.
+Payload có dạng:
 
-Tổng và chi tiết lần đo vượt ngưỡng cuối được lưu trong NVS, namespace `iot-alerts`,
-trước khi công bố qua MQTT. Sau reset/mất điện, ESP32 khôi phục tổng và lần đọc
-mới vượt ngưỡng được tính tiếp. Mất Wi-Fi/MQTT vẫn đếm. Topic retained
-`esp32/leds/alert-counts` gửi tổng `{"led1":5,"led2":0,"led3":12}` mỗi 2 giây
-và ngay khi kết nối lại. Payload có `details` cho từng đèn: tổng, số đo và ngưỡng
-của lần đo được tính cuối cùng; không thay bằng số đo bình thường sau cảnh báo.
+```json
+{"temperature":35,"humidity":65,"light":1500,"thresholds":{"temperature":30,"humidity":80,"light":3000}}
+```
 
-Firmware đọc được bộ đếm NVS bản cũ và giữ nguyên tổng khi nâng cấp; phần tổng cũ
-vẫn là kết quả theo cách đếm trước đây, không thể quy đổi thành số lần đo quá khứ.
-Backend lưu tổng vào MySQL. Nạp firmware bình thường giữ NVS; thao tác erase flash
-sẽ xóa dữ liệu trên ESP32, vì vậy không dùng erase flash khi cần giữ bộ đếm.
+Backend chỉ tăng số đếm khi nhận số đo vượt ngưỡng và lưu lịch sử thành công.
+Ví dụ hai mẫu trực tiếp đều 35 °C, ngưỡng 30 °C, tạo 2 history và tăng tổng 2.
+Mất mạng thì đèn vẫn tự nháy nhưng không có số đếm/lịch sử mới trên backend.
+Ngưỡng vẫn lưu trong NVS namespace `iot-thresholds` để mạch cảnh báo khi offline;
+namespace bộ đếm cũ không còn được sử dụng, không cần erase flash để nâng cấp.
 
 Topic `esp32/thresholds/{temperature|humidity|light}/control` nhận số ngưỡng;
 topic tương ứng `/status` trả ngưỡng đã lưu. Cả cấu hình và xác nhận đều retained.

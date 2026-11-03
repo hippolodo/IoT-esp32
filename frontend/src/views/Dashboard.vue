@@ -68,12 +68,18 @@
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
         <label v-for="field in thresholdFields" :key="field.key" class="text-sm font-medium">
           {{ field.label }}
-          <input v-model.number="draft[field.key]" @input="dirty = true" :min="0" :max="field.max" type="number" step="0.001" required class="block mt-2 w-full rounded-lg border border-gray-300 p-3" />
+          <input v-model.number="draft[field.key]" @input="dirty = true" :min="0" :max="field.max" type="number" step="0.1" required class="block mt-2 w-full rounded-lg border border-gray-300 p-3" />
         </label>
       </div>
-      <button :disabled="saving || !system.mqttConnected" class="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40">{{ saving ? 'Đang gửi…' : 'Lưu 3 ngưỡng' }}</button>
+      <button :disabled="saving || !system.mqttConnected" class="mt-4 rounded-lg bg-blue-600 px-4 py-2 text-white disabled:opacity-40">
+        <template v-if="saving">Đang gửi…</template>
+        <template v-else>Lưu 3 ngưỡng</template>
+      </button>
       <p v-if="thresholdError" role="alert" class="mt-2 text-sm text-red-600">{{ thresholdError }}</p>
-      <p role="status" class="mt-2 text-sm text-gray-500">{{ thresholdsConfirmed ? 'ESP32 đã xác nhận cả 3 ngưỡng.' : 'Chờ ESP32 xác nhận ngưỡng. Kiểm tra kết nối nếu chờ lâu.' }}</p>
+      <p role="status" class="mt-2 text-sm text-gray-500">
+        <template v-if="thresholdsConfirmed">ESP32 đã xác nhận cả 3 ngưỡng.</template>
+        <template v-else>Chờ ESP32 xác nhận ngưỡng. Kiểm tra kết nối nếu chờ lâu.</template>
+      </p>
     </form>
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div class="lg:col-span-2 bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
@@ -95,7 +101,7 @@
           <i class="fa-regular fa-lightbulb text-amber-500 mr-2 text-lg"></i>
           <h3 class="text-lg font-bold">Điều Khiển Đèn</h3>
         </div>
-        <p class="mb-4 text-xs text-gray-500">Mỗi lần đọc cảm biến vượt ngưỡng tính 1 cảnh báo (2 giây/lần), kể cả giá trị không đổi. Nhịp nháy và bật/tắt thủ công không cộng thêm.</p>
+        <p class="mb-4 text-xs text-gray-500">Mỗi số đo vượt ngưỡng được backend nhận và lưu lịch sử thành công tính 1 cảnh báo. Mất kết nối không đếm và không cộng bù khi kết nối lại.</p>
 
         <p v-if="!lamps.length" class="text-sm text-gray-500">Chưa có thiết bị.</p>
         <div v-if="lamps.length" class="grid grid-cols-2 gap-3 mb-4" :aria-busy="system.sendingAll">
@@ -129,7 +135,7 @@
               <div
                 :class="[
                   'w-10 h-10 rounded-full flex items-center justify-center transition-colors',
-                  lamp.warning ? 'sensor-warning-blink' : lamp.isOn ? 'bg-blue-100 text-blue-600' : 'bg-red-50 text-red-600 border border-red-200',
+                  lampIconClass(lamp),
                 ]"
               >
                 <i class="fa-regular fa-lightbulb text-lg"></i>
@@ -162,14 +168,14 @@
               :aria-label="lamp.name"
               :class="[
                 'disabled:opacity-40 disabled:cursor-not-allowed relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-                lamp.isOn ? 'bg-blue-600' : 'bg-gray-200',
+                switchClass(lamp.isOn),
               ]"
             >
               <span class="sr-only">Toggle {{ lamp.name }}</span>
               <span
                 :class="[
                   'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-500 ease-in-out',
-                  lamp.isOn ? 'translate-x-5' : 'translate-x-0',
+                  switchKnobClass(lamp.isOn),
                 ]"
               ></span>
             </button>
@@ -196,16 +202,53 @@ import { Line } from 'vue-chartjs'
 import ConnectionStatus from '../components/ConnectionStatus.vue'
 import { system, toggleDevice, controlAllDevices, saveThresholds } from '../services/system'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
+// Chuyển system.devices thành dữ liệu hiển thị đèn: bật/tắt, GPIO và cảnh báo suy ra từ số đo/ngưỡng.
 const lamps = computed(() =>
-  system.devices.map((row) => ({
-    ...row,
-    isOn: row.status === 1,
-    warning: system.backendOnline && system.mqttConnected && system.esp32Online === true
-      && system.thresholdConfirmed[row.sensorKey] && !(system.sensorError && row.sensorKey !== 'light')
-      && system.sensors[row.sensorKey]?.value > system.thresholds[row.sensorKey],
-    gpio: row.controlPin != null ? `GPIO ${row.controlPin}` : `GPIO ${row.pinGpio ?? '—'}`,
-  })),
+  system.devices.map((row) => {
+    let gpio
+    if (row.controlPin != null) {
+      gpio = `GPIO ${row.controlPin}`
+    } else {
+      gpio = `GPIO ${row.pinGpio ?? '—'}`
+    }
+    return {
+      ...row,
+      isOn: row.status === 1,
+      warning: system.backendOnline && system.mqttConnected && system.esp32Online === true
+        && system.thresholdConfirmed[row.sensorKey] && !(system.sensorError && row.sensorKey !== 'light')
+        && system.sensors[row.sensorKey]?.value > system.thresholds[row.sensorKey],
+      gpio,
+    }
+  }),
 )
+
+// Chọn màu icon và công tắc theo trạng thái, tách riêng để template dễ đọc.
+function lampIconClass(lamp) {
+  if (lamp.warning) {
+    return 'sensor-warning-blink'
+  } else if (lamp.isOn) {
+    return 'bg-blue-100 text-blue-600'
+  } else {
+    return 'bg-red-50 text-red-600 border border-red-200'
+  }
+}
+
+function switchClass(isOn) {
+  if (isOn) {
+    return 'bg-blue-600'
+  } else {
+    return 'bg-gray-200'
+  }
+}
+
+function switchKnobClass(isOn) {
+  if (isOn) {
+    return 'translate-x-5'
+  } else {
+    return 'translate-x-0'
+  }
+}
+// Chỉ chọn đèn đã ánh xạ MQTT để các nút điều khiển tất cả không gửi tới thiết bị chưa cấu hình.
 const controllableLamps = computed(() => lamps.value.filter((lamp) => lamp.controllable))
 const sensorLabels = { temperature: 'Nhiệt độ', humidity: 'Độ ẩm', light: 'Ánh sáng' }
 const thresholdFields = [
@@ -213,11 +256,15 @@ const thresholdFields = [
   { key: 'humidity', label: 'Độ ẩm (%) · Đèn 2', max: 100 },
   { key: 'light', label: 'Ánh sáng (ADC) · Đèn 3', max: 4095 },
 ]
+// Bản nháp ba ngưỡng trong ô nhập; sửa ở đây chưa đổi ngưỡng trên ESP32.
 const draft = reactive({ temperature: 35, humidity: 80, light: 3000 })
+// dirty giữ nội dung người dùng đang sửa; saving khóa nút trong lúc gửi; thresholdError chứa lỗi.
 const dirty = ref(false)
 const saving = ref(false)
 const thresholdError = ref('')
+// Chỉ báo đã xác nhận khi cả ba ngưỡng đều được ESP32 phản hồi phù hợp.
 const thresholdsConfirmed = computed(() => thresholdFields.every(({ key }) => system.thresholdConfirmed[key]))
+// Đồng bộ ngưỡng từ store vào form ngay lúc mở và khi thay đổi, trừ khi người dùng đang sửa.
 watch(
   () => system.thresholds,
   (values) => {
@@ -225,6 +272,8 @@ watch(
   },
   { immediate: true },
 )
+// Nút Lưu gọi hàm này: gửi bản sao draft, hiển thị lỗi và kết thúc trạng thái đang gửi.
+// Đặt dirty=false khi HTTP thành công; trạng thái ESP32 xác nhận được theo dõi riêng.
 async function submitThresholds() {
   saving.value = true
   thresholdError.value = ''
@@ -237,6 +286,7 @@ async function submitThresholds() {
     saving.value = false
   }
 }
+// Khóa điều khiển tất cả nếu mất kết nối, chưa có đèn phù hợp hoặc còn lệnh đang chờ.
 const allControlsDisabled = computed(() =>
   !system.backendOnline ||
   !system.mqttConnected ||
@@ -245,6 +295,7 @@ const allControlsDisabled = computed(() =>
   !controllableLamps.value.length ||
   controllableLamps.value.some((lamp) => lamp.pending || system.sending[lamp.id]),
 )
+// Từ system.points tạo nhãn thời gian và ba dataset cho Chart.js; thiếu số đo thì để null.
 const chartData = computed(() => ({
   labels: system.points.map((row) => row.time.slice(11)),
   datasets: [
@@ -257,6 +308,7 @@ const chartData = computed(() => ({
     tension: 0.4,
   })),
 }))
+// Cấu hình biểu đồ: trục trái nhiệt độ/độ ẩm, trục phải ánh sáng ADC và các tùy chọn hiển thị.
 const chartOptions = ref({
   responsive: true,
   maintainAspectRatio: false,

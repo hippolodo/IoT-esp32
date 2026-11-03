@@ -3,6 +3,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 
+# Nhận URL database, trả engine và hàm tạo Session; không tự tạo hay sửa bảng.
 def make_database(url):
     options = {"pool_pre_ping": True}
     if url.startswith("sqlite"):

@@ -271,32 +271,27 @@ def test_third_led_control_and_sensor_mapping(client, connected):
     assert client.get('/api/history').json()['data']['content'][0]['status'] == 'SUCCESS'
 
 
-def test_alert_counts_snapshots_duplicates_and_stale_reset_values(client, connected):
-    assert client.get('/api/alert-counts').json()['data'] == {'1': None, '2': None, '3': None}
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":5,"led2":0,"led3":12}', retained=True)
-    assert client.get('/api/alert-counts').json()['data'] == {'1': 5, '2': 0, '3': 12}
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":5,"led2":0,"led3":12}')
-    assert client.get('/api/alert-counts').json()['data']['3'] == 12
+def send_sample(service, values, thresholds=None, retained=False):
+    payload = dict(values)
+    if thresholds is not None:
+        payload['thresholds'] = thresholds
+    service.handle_message(service.settings.sensor_topic, json.dumps(payload), retained=retained)
+
+
+def test_alert_count_requires_recorded_reading_and_ignores_old_snapshots(client, connected):
+    assert connected.alert_counts_status() == {1: 0, 2: 0, 3: 0}
+    for retained in (False, True):
+        connected.handle_message('esp32/leds/alert-counts', '{"led1":999,"led2":999,"led3":999}', retained)
+    assert connected.alert_counts_status() == {1: 0, 2: 0, 3: 0}
+    assert client.get('/api/history').json()['data']['totalElements'] == 0
+    send_sample(connected, {'temperature': 35}, {'temperature': 30}, retained=True)
+    assert client.get('/api/sensors/data').json()['data']['totalElements'] == 0
+    assert connected.alert_counts_status()[1] == 0
+    for _ in range(2):
+        send_sample(connected, {'temperature': 35}, {'temperature': 30})
     connected.handle_message('esp32/led1/status', 'ON')
     connected.handle_message('esp32/led1/status', 'OFF')
-    assert client.get('/api/alert-counts').json()['data']['1'] == 5
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    assert client.get('/api/alert-counts').json()['data'] == {'1': 5, '2': 0, '3': 12}
-    assert client.get('/api/history').json()['data']['totalElements'] == 0
-
-
-def test_identical_high_readings_keep_increasing_alert_count(client):
-    service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    for total in (1, 2):
-        # Firmware counts each fresh 35-degree reading above threshold 30.
-        service.handle_message('esp32/sensor/data', '{"temperature":35}')
-        payload = json.dumps({'led1': total, 'led2': 0, 'led3': 0, 'details': {
-            'led1': {'total': total, 'value': 35, 'threshold': 30},
-        }})
-        service.handle_message('esp32/leds/alert-counts', payload)
-        service.handle_message('esp32/leds/alert-counts', payload, retained=True)
-        assert service.alert_counts_status()[1] == total
+    assert connected.alert_counts_status()[1] == 2
     rows = client.get('/api/history?action=ALERT&deviceId=1&sort=asc').json()['data']['content']
     assert len(rows) == 2
     assert [row['alertCount'] for row in rows] == [1, 1]
@@ -304,134 +299,127 @@ def test_identical_high_readings_keep_increasing_alert_count(client):
     assert all(row['alertValue'] == 35 and row['alertThreshold'] == 30 for row in rows)
 
 
-def test_alert_counts_survive_backend_restart_and_keep_counting(client):
-    service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":15,"led2":2,"led3":30}')
+def test_alert_count_survives_backend_restart_without_offline_backfill(client):
+    send_sample(client.app.state.mqtt, {'light': 3500}, {'light': 3000})
     app = create_app(Settings(database_url=client.app.state.settings.database_url, mqtt_enabled=False))
     with TestClient(app) as restarted:
         restarted.headers['Authorization'] = client.headers['Authorization']
-        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 15, '2': 2, '3': 30}
-        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":14,"led2":0,"led3":29}', retained=True)
-        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 15, '2': 2, '3': 30}
-        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":16,"led2":2,"led3":31}')
-        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 16, '2': 2, '3': 31}
+        assert restarted.get('/api/alert-counts').json()['data'] == {'1': 0, '2': 0, '3': 1}
+        # Offline counts from an old firmware and retained measurements cannot add history.
+        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":99,"led2":99,"led3":99}', retained=True)
+        send_sample(app.state.mqtt, {'light': 3500}, {'light': 3000}, retained=True)
+        assert restarted.get('/api/alert-counts').json()['data']['3'] == 1
+        send_sample(app.state.mqtt, {'light': 3500}, {'light': 3000})
+        assert restarted.get('/api/alert-counts').json()['data']['3'] == 2
+        assert restarted.get('/api/history?action=ALERT').json()['data']['totalElements'] == 2
 
 
-def test_alert_history_filters_batch_counts_and_duplicate_snapshots(client, connected):
+def test_alert_history_filters_and_original_threshold(client, connected):
     from unittest.mock import patch
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":10,"led2":5,"led3":2}')
-    # The first snapshot is a baseline, not an invented history of old events.
-    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 0
     with patch('app.services.mqtt.now', return_value=datetime(2026, 10, 28, 10, 0, 0)):
-        connected.handle_message('esp32/leds/alert-counts', '{"led1":11,"led2":5,"led3":5}')
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":11,"led2":5,"led3":5}', retained=True)
-    connected.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
+        send_sample(connected, {'temperature': 35, 'humidity': 70, 'light': 3500},
+                    {'temperature': 30, 'humidity': 80, 'light': 3000})
     page = client.get('/api/history?action=ALERT&status=RECORDED&sort=asc&size=1').json()['data']
     assert page['totalElements'] == 2 and page['totalPages'] == 2
-    assert page['content'][0]['deviceId'] == 1
-    assert page['content'][0]['alertCount'] == 1 and page['content'][0]['alertTotal'] == 11
-    assert page['content'][0]['userId'] is None
-    rows = client.get('/api/history?action=ALERT&deviceId=3').json()['data']['content']
-    assert len(rows) == 1 and rows[0]['alertCount'] == 3 and rows[0]['alertTotal'] == 5
-    assert client.get('/api/history?action=ALERT&status=SUCCESS').json()['data']['totalElements'] == 0
-    assert client.get('/api/history?action=ON').json()['data']['totalElements'] == 0
+    assert page['content'][0]['deviceId'] == 1 and page['content'][0]['userId'] is None
     params = {'action': 'ALERT', 'startTime': '2026-10-28 10', 'endTime': '2026-10-28 10'}
     assert client.get('/api/history', params=params).json()['data']['totalElements'] == 2
-    assert client.get('/api/history?action=ALERT&startTime=2026-10-27&endTime=2026-10-27').json()['data']['totalElements'] == 0
-    # Automatic records must not block or acknowledge manual commands.
+    assert client.get('/api/history?action=ALERT&status=SUCCESS').json()['data']['totalElements'] == 0
+    connected.handle_message('esp32/thresholds/temperature/status', '40')
+    send_sample(connected, {'temperature': 20}, {'temperature': 40})
+    row = client.get('/api/history?action=ALERT&deviceId=1').json()['data']['content'][0]
+    assert row['alertValue'] == 35 and row['alertThreshold'] == 30
+    # Recorded alerts never acknowledge or block manual commands.
     assert client.post('/api/devices/control', json={'deviceId': 3, 'status': 1}).status_code == 200
     connected.handle_message('esp32/led3/status', 'ON')
-    manual = client.get('/api/history?action=ON&deviceId=3&status=SUCCESS').json()['data']['content']
+    manual = client.get('/api/history?action=ON&status=SUCCESS').json()['data']['content']
     assert len(manual) == 1 and manual[0]['alertCount'] is None
 
 
-def test_alert_history_survives_restart(client):
+@pytest.mark.parametrize('threshold', [None, True, '30', -1, 51, float('inf')])
+def test_invalid_or_unknown_threshold_does_not_invent_alerts(client, threshold):
     service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    service.handle_message('esp32/leds/alert-counts', '{"led1":1,"led2":0,"led3":0}')
-    app = create_app(Settings(database_url=client.app.state.settings.database_url, mqtt_enabled=False))
-    with TestClient(app) as restarted:
-        restarted.headers['Authorization'] = client.headers['Authorization']
-        app.state.mqtt.handle_message('esp32/leds/alert-counts', '{"led1":1,"led2":0,"led3":0}', retained=True)
-        page = restarted.get('/api/history?action=ALERT').json()['data']
-        assert page['totalElements'] == 1 and page['content'][0]['alertCount'] == 1
+    send_sample(service, {'temperature': 35}, {'temperature': threshold})
+    assert service.alert_counts_status()[1] == 0
+    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 0
 
 
-def test_alert_history_stores_trigger_values_and_original_threshold(client):
+def test_unconfirmed_new_threshold_does_not_replace_applied_threshold(client, connected):
+    # Old firmware without thresholds in its payload uses the last confirmed value.
+    send_sample(connected, {'temperature': 35})
+    assert connected.alert_counts_status()[1] == 0
+    connected.handle_message('esp32/thresholds/temperature/status', '40')
+    connected.set_thresholds({'temperature': 30})
+    send_sample(connected, {'temperature': 35})
+    assert connected.alert_counts_status()[1] == 0
+    connected.handle_message('esp32/thresholds/temperature/status', '30')
+    send_sample(connected, {'temperature': 35})
+    assert connected.alert_counts_status()[1] == 1
+    # A sample carries the actual threshold used at sampling, even if current config changed.
+    send_sample(connected, {'temperature': 35}, {'temperature': 40})
+    assert connected.alert_counts_status()[1] == 1
+
+
+def test_at_threshold_invalid_or_unmapped_samples_do_not_count(client):
     service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    payload = {'led1': 1, 'led2': 0, 'led3': 0, 'details': {
-        'led1': {'total': 1, 'value': 32.5, 'threshold': 30},
-    }}
-    service.handle_message('esp32/leds/alert-counts', json.dumps(payload))
-    service.handle_message('esp32/thresholds/temperature/status', '40')
-    service.handle_message('esp32/sensor/data', '{"temperature":20}')
-    row = client.get('/api/history?action=ALERT&deviceId=1').json()['data']['content'][0]
-    assert row['alertValue'] == 32.5 and row['alertThreshold'] == 30
-    service.handle_message('esp32/leds/alert-counts', json.dumps(payload), retained=True)
-    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 1
-    payload.update(led1=4, details={'led1': {'total': 4, 'value': 42, 'threshold': 40}})
-    service.handle_message('esp32/leds/alert-counts', json.dumps(payload))
-    row = client.get('/api/history?action=ALERT&sort=desc').json()['data']['content'][0]
-    assert row['alertCount'] == 3 and row['alertValue'] == 42 and row['alertThreshold'] == 40
+    send_sample(service, {'temperature': 30, 'humidity': None, 'light': True},
+                {'temperature': 30, 'humidity': 0, 'light': 0})
+    assert service.alert_counts_status() == {1: 0, 2: 0, 3: 0}
+    service.settings.device_map = {99: 'led1'}
+    send_sample(service, {'temperature': 35}, {'temperature': 30})
+    assert service.alert_counts_status() == {99: 0}
+    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 0
 
 
-def test_first_snapshot_with_trigger_detail_records_only_the_known_reading(client):
+@pytest.mark.parametrize('failing_table', ['datasensors', 'histories', 'alert_history_details', 'alert_counts'])
+def test_database_failure_rolls_back_measurements_history_and_count(client, monkeypatch, failing_table):
+    import app.services.mqtt as module
+    from sqlalchemy import text
     service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', json.dumps({
-        'led1': 8, 'led2': 0, 'led3': 0,
-        'details': {'led1': {'total': 8, 'value': 32, 'threshold': 30}},
-    }))
-    page = client.get('/api/history?action=ALERT').json()['data']
-    assert page['totalElements'] == 1
-    row = page['content'][0]
-    assert row['alertCount'] == 1 and row['alertTotal'] == 8 and row['alertValue'] == 32
+    send_sample(service, {'temperature': 35}, {'temperature': 30})
+    original = module.execute_sql
+    def fail(db, sql, params=None):
+        if 'INSERT INTO ' + failing_table in sql:
+            raise RuntimeError('simulated database write failure')
+        return original(db, sql, params)
+    monkeypatch.setattr(module, 'execute_sql', fail)
+    service.hub.emit = Mock()
+    with pytest.raises(RuntimeError, match='simulated database'):
+        send_sample(service, {'temperature': 35}, {'temperature': 30})
+    assert service.alert_counts_status()[1] == 1
+    with client.app.state.sessions() as db:
+        assert db.execute(text('SELECT COUNT(*) FROM histories')).scalar_one() == 1
+        assert db.execute(text('SELECT COUNT(*) FROM alert_history_details')).scalar_one() == 1
+        assert db.execute(text('SELECT COUNT(*) FROM datasensors')).scalar_one() == 1
+    service.hub.emit.assert_not_called()
 
 
-@pytest.mark.parametrize('detail', [
-    {'total': 9, 'value': 32, 'threshold': 30},
-    {'total': 1, 'value': 30, 'threshold': 30},
-    {'total': 1, 'value': True, 'threshold': 0},
-    {'total': 1, 'value': 70, 'threshold': 60},
-    {'total': 1, 'value': '32', 'threshold': 30},
-    {'total': 1, 'value': float('inf'), 'threshold': 30},
-])
-def test_alert_history_rejects_unrelated_or_invalid_trigger_details(client, detail):
-    import json
+def test_alert_events_and_custom_device_map(client):
+    from sqlalchemy import text
     service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":0,"led2":0,"led3":0}')
-    service.handle_message('esp32/leds/alert-counts', json.dumps({
-        'led1': 1, 'led2': 0, 'led3': 0, 'details': {'led1': detail},
-    }))
-    row = client.get('/api/history?action=ALERT').json()['data']['content'][0]
-    assert row['alertValue'] is None and row['alertThreshold'] is None
-    assert row['alertTotal'] == 1
-
-
-@pytest.mark.parametrize('payload', [
-    '[]', '{"led1":1}', '{"led1":true,"led2":0,"led3":0}',
-    '{"led1":-1,"led2":0,"led3":0}', '{"led1":1.5,"led2":0,"led3":0}',
-    '{"led1":4294967296,"led2":0,"led3":0}',
-])
-def test_invalid_alert_counts_do_not_overwrite_snapshot(client, payload):
-    service = client.app.state.mqtt
-    service.handle_message('esp32/leds/alert-counts', '{"led1":2,"led2":3,"led3":4}')
-    with pytest.raises(ValueError):
-        service.handle_message('esp32/leds/alert-counts', payload)
-    assert client.get('/api/alert-counts').json()['data'] == {'1': 2, '2': 3, '3': 4}
-
-
-def test_alert_counts_websocket_and_custom_device_map(client):
-    service = client.app.state.mqtt
+    with client.app.state.sessions.begin() as db:
+        db.execute(text("INSERT INTO devices (id, name, device_type, status) VALUES (7, 'LED1', 'LIGHT', 0), (9, 'LED3', 'LIGHT', 0)"))
     service.settings.device_map = {9: 'led3', 7: 'led1'}
-    token = client.headers['Authorization'].split()[1]
     with client.websocket_connect('/ws') as ws:
-        ws.send_json({'type': 'auth', 'token': token})
         assert ws.receive_json()['type'] == 'authenticated'
-        service.handle_message('esp32/leds/alert-counts', '{"led1":8,"led2":0,"led3":20}')
-        event = ws.receive_json()
-        assert event == {'topic': '/topic/alert-counts', 'data': {'9': 20, '7': 8}}
-    assert client.get('/api/alert-counts').json()['data'] == {'9': 20, '7': 8}
+        send_sample(service, {'temperature': 35, 'light': 3500}, {'temperature': 30, 'light': 3000})
+        assert ws.receive_json()['topic'] == '/topic/sensors'
+        assert ws.receive_json() == {'topic': '/topic/alert-counts', 'data': {'9': 1, '7': 1}}
+        assert ws.receive_json()['topic'] == '/topic/history'
+    assert client.get('/api/alert-counts').json()['data'] == {'9': 1, '7': 1}
+
+
+def test_counter_migration_uses_recorded_history_and_is_repeatable(client):
+    from sqlalchemy import text
+    from migrate_alert_counts import migrate
+    service = client.app.state.mqtt
+    send_sample(service, {'temperature': 35}, {'temperature': 30})
+    with client.app.state.sessions.begin() as db:
+        db.execute(text("UPDATE alert_counts SET total = 999 WHERE led = 'led1'"))
+    migrate(client.app.state.settings)
+    migrate(client.app.state.settings)
+    assert service.alert_counts_status() == {1: 1, 2: 0, 3: 0}
+    assert client.get('/api/history?action=ALERT').json()['data']['totalElements'] == 1
 
 
 def test_threshold_commands_wait_for_matching_confirmation(client, connected):
@@ -628,8 +616,8 @@ def test_reconnect_resubscribes_and_invalid_sensor_values(client):
     fake = Mock()
     service._on_connect(fake, None, None, SimpleNamespace(is_failure=False), None)
     topics = dict(fake.subscribe.call_args.args[0])
-    assert topics['esp32/leds/alert-counts'] == 1
-    assert topics['esp32/sensor/data'] == 1 and topics['esp32/led2/status'] == 1
+    assert 'esp32/leds/alert-counts' not in topics
+    assert topics['esp32/sensor/data'] == 0 and topics['esp32/led2/status'] == 1
     service.handle_message('esp32/sensor/data', '{"light":true,"temperature":NaN,"humidity":"bad"}')
     assert client.get('/api/sensors/data').json()['data']['totalElements'] == 0
     with pytest.raises(ValueError):

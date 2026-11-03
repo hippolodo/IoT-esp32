@@ -7,6 +7,7 @@ import secrets
 PBKDF2_ITERATIONS = 600_000
 
 
+# Tạo hash PBKDF2 kèm salt ngẫu nhiên cho mật khẩu mới; không lưu mật khẩu gốc.
 def hash_password(password):
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac(
@@ -15,6 +16,7 @@ def hash_password(password):
     return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${digest}"
 
 
+# So sánh mật khẩu nhập với hash PBKDF2 hoặc SHA-256 của tài khoản cũ.
 def verify_password(password, stored_hash):
     if stored_hash.startswith("pbkdf2_sha256$"):
         try:

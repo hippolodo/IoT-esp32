@@ -227,6 +227,7 @@ const profile = ref(null),
   loading = ref(true),
   error = ref('')
 const controller = new AbortController()
+// Mở màn hồ sơ thì lấy song song tài khoản hiện tại và danh mục để đếm cảm biến.
 onMounted(async () => {
   try {
     const [user, sensors] = await Promise.all([
@@ -241,5 +242,6 @@ onMounted(async () => {
     loading.value = false
   }
 })
+// Rời màn hình thì hủy request đang chờ, không để dữ liệu cũ tiếp tục tải.
 onUnmounted(() => controller.abort())
 </script>

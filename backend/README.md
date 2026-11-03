@@ -212,7 +212,7 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | GET | `/api/user/profile` | |
 | GET | `/api/devices` | |
 | GET | `/api/devices/{id}` | |
-| GET | `/api/alert-counts` | Số lần đo vượt ngưỡng theo device ID; null nếu chưa nhận từ ESP32 |
+| GET | `/api/alert-counts` | Số mẫu vượt ngưỡng đã lưu lịch sử theo device ID; chưa có thì 0 |
 | POST | `/api/devices/control` | `{"deviceId":1,"status":1}` (0=OFF, 1=ON) |
 | GET | `/api/sensors` | |
 | GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
@@ -231,32 +231,31 @@ POST gửi cấu hình retained qua `esp32/thresholds/{key}/control`;
 Nếu mất broker, POST trả 503. ESP32 lưu ngưỡng trong NVS, nháy đèn khi giá trị
 lớn hơn ngưỡng và trở lại trạng thái thủ công khi hết vượt ngưỡng.
 ACK `ON/OFF` của đèn xác nhận trạng thái công tắc thủ công, không phải nhịp nháy.
-Bộ đếm nhận tổng số từ topic retained `esp32/leds/alert-counts`, ánh xạ led1/2/3
-qua `MQTT_DEVICE_MAP` rồi phát `/topic/alert-counts`. Bản tin lặp không cộng thêm;
-Tổng được lưu trong bảng `alert_counts` (`led`, `total`, `updated_at`). API đọc từ DB,
-khôi phục được cả khi backend khởi động lại và ESP32 đang offline. Snapshot trùng
-hoặc thấp hơn tổng đã lưu không làm tăng thêm hoặc giảm tổng. ESP32 lưu tổng và
-chi tiết lần đo cuối trong NVS nên reset vẫn tiếp tục đếm từ tổng trước đó.
-Mỗi mẫu hợp lệ vượt ngưỡng cộng 1 (2 giây/lần), kể cả giá trị giống mẫu trước;
-nhịp nháy và bật/tắt thủ công không tăng tổng. Tổng cũ được giữ khi nâng cấp firmware.
-Tạo bảng một lần bằng `python migrate_alert_counts.py` trong thư mục `backend`;
-lệnh có thể chạy lại, không xóa hay đặt lại số đếm hiện có.
-Migration này cũng tạo `alert_history_details`. Khi tổng tăng sau snapshot đầu tiên,
-backend lưu `histories.action=ALERT`, `status=RECORDED`, `user_id=NULL`, cùng số lần đo vượt ngưỡng
-tăng (`occurrence_count`) và tổng mới (`total`) trong bảng chi tiết. Lọc qua
-`/api/history?action=ALERT`, kết hợp `deviceId`, `status=RECORDED` và thời gian.
-Timestamp là thời điểm backend ghi nhận; khi offline nhiều lần đo có thể được gộp
-trong một dòng. Không tạo ngược lịch sử quá khứ từ tổng đã có. MQTT trùng/cũ
-không tạo lại dòng lịch sử. Sự kiện `/topic/history` báo frontend tải lại danh sách.
-Payload có thể thêm `details.led1={"total":12,"value":32.5,"threshold":30}` (tương tự
-led2/led3). `total` phải khớp tổng của đèn trong cùng bản tin; giá trị phải hữu hạn
-và lớn hơn ngưỡng hợp lệ. Backend lưu vào `trigger_value`, `trigger_threshold`;
-API trả `alertValue`, `alertThreshold`. Chỉ dùng số đo được chụp tại lần đo vượt ngưỡng được tính cuối cùng,
-không suy ra từ số đo mới nhất hay ngưỡng hiện tại. Firmware cũ vẫn được chấp nhận
-với giá trị null. Dòng gộp nhiều lần đo chỉ có số đo của lần đo cuối, giao diện ghi rõ.
-Chạy lại `python migrate_alert_counts.py` để bổ sung hai cột cho database hiện có.
-Ngoại lệ cho baseline: snapshot đầu tiên có chi tiết hợp lệ thì ghi đúng 1 lần đo
-cuối đã biết số đo, không tạo lịch sử cho các lần đo trước không có chi tiết.
+Backend tự đếm trên bản tin số đo trực tiếp từ `esp32/sensor/data` (QoS 0).
+Firmware mới gửi `thresholds` cùng mẫu, ví dụ:
+
+```json
+{"temperature":35,"humidity":65,"light":1500,"thresholds":{"temperature":30,"humidity":80,"light":3000}}
+```
+
+Với mỗi giá trị hợp lệ lớn hơn ngưỡng, backend ghi một history `ALERT/RECORDED`,
+chi tiết `occurrence_count=1`, `trigger_value`, `trigger_threshold`, và tăng tổng
+trong `alert_counts`. Cùng transaction với số đo: bất kỳ lỗi ghi nào cũng rollback,
+không tăng tổng và không phát sự kiện thành công. Mẫu bằng/thấp hơn ngưỡng, số lỗi,
+thiết bị chưa ánh xạ hoặc thiếu danh mục không tạo cảnh báo.
+
+Firmware cũ không có `thresholds` trong payload chỉ được đếm sau khi backend đã
+nhận `/status` ngưỡng. Ngưỡng mới đang chờ áp dụng không thay thế ngưỡng đã xác nhận.
+Không dùng mặc định chưa biết để tạo lịch sử. Snapshot số đo retained và tổng đếm
+cũ từ `esp32/leds/alert-counts` bị bỏ qua, không cộng bù cảnh báo offline.
+
+Sau commit, backend phát `/topic/alert-counts` và `/topic/history`; API đọc tổng từ DB.
+Dữ liệu mới có đúng một dòng history cho mỗi cảnh báo; các dòng gộp cũ vẫn giữ nguyên.
+Khi nâng cấp, dừng backend rồi chạy `python migrate_alert_counts.py` để tạo/bổ sung
+bảng và dựng lại tổng bằng SUM(occurrence_count) của các history ALERT/RECORDED.
+Phần tổng cũ không có lịch sử sẽ không được giữ; migration không xóa bản ghi cũ và
+có thể chạy lại. Khởi động lại backend sau migration.
+
 Với database cũ, chạy `python migrate_live_code.py` sau khi cấu hình đủ ba LED
 trong `MQTT_DEVICE_MAP`; script chỉ cập nhật danh mục đèn, giữ dữ liệu đo cũ.
 
@@ -299,7 +298,7 @@ Mosquitto phải cho phép kết nối từ mạch trên cổng 1884 với đún
 
 | Hướng | Topic | Payload |
 | --- | --- | --- |
-| Nhận | `esp32/sensor/data` | `{"temperature":28.5,"humidity":65,"light":1500}` |
+| Nhận | `esp32/sensor/data` | `{"temperature":28.5,"humidity":65,"light":1500,"thresholds":{"temperature":35,"humidity":80,"light":3000}}` |
 | Gửi | `esp32/led1/control`, `esp32/led2/control` | `ON` hoặc `OFF` |
 | Nhận | `esp32/led1/status`, `esp32/led2/status` | `ON`, `OFF`, `FAIL` |
 | Nhận | `esp32/status` | Chuỗi trạng thái online/offline |

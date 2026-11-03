@@ -2,7 +2,8 @@
   <div v-if="!user" class="min-h-screen bg-[#f8f9fc] flex items-center justify-center p-6">
     <form class="w-full max-w-sm rounded-2xl bg-white p-8 shadow-sm space-y-5" @submit.prevent="submitAuth">
       <h1 class="text-xl font-bold text-gray-800">
-        {{ isRegistering ? 'Đăng ký tài khoản' : 'Đăng nhập SmartHome' }}
+        <template v-if="isRegistering">Đăng ký tài khoản</template>
+        <template v-else>Đăng nhập SmartHome</template>
       </h1>
       <p v-if="authError" role="alert" class="text-sm text-red-600">{{ authError }}</p>
       <p v-if="authSuccess" role="status" class="text-sm text-green-700">{{ authSuccess }}</p>
@@ -11,10 +12,7 @@
         <input
           v-model="username"
           autocomplete="username"
-          :minlength="isRegistering ? 3 : undefined"
-          :maxlength="isRegistering ? 50 : undefined"
-          :pattern="isRegistering ? '[A-Za-z0-9_.-]{3,50}' : undefined"
-          :title="isRegistering ? '3–50 ký tự: chữ, số, dấu chấm, gạch dưới hoặc gạch ngang' : undefined"
+          v-bind="usernameRules"
           required
           class="mt-2 w-full rounded-lg border border-gray-300 p-3"
         />
@@ -45,9 +43,7 @@
         <input
           v-model="password"
           type="password"
-          :autocomplete="isRegistering ? 'new-password' : 'current-password'"
-          :minlength="isRegistering ? 8 : undefined"
-          :maxlength="isRegistering ? 128 : undefined"
+          v-bind="passwordRules"
           required
           class="mt-2 w-full rounded-lg border border-gray-300 p-3"
         />
@@ -68,7 +64,9 @@
         :disabled="authBusy"
         class="w-full rounded-lg bg-blue-600 p-3 font-semibold text-white disabled:opacity-50"
       >
-        {{ authBusy ? 'Đang xử lý…' : isRegistering ? 'Đăng ký' : 'Đăng nhập' }}
+        <template v-if="authBusy">Đang xử lý…</template>
+        <template v-else-if="isRegistering">Đăng ký</template>
+        <template v-else>Đăng nhập</template>
       </button>
       <button
         type="button"
@@ -76,7 +74,8 @@
         @click="switchAuthMode"
         class="w-full text-sm text-blue-600 disabled:opacity-50"
       >
-        {{ isRegistering ? 'Đã có tài khoản? Đăng nhập' : 'Chưa có tài khoản? Đăng ký' }}
+        <template v-if="isRegistering">Đã có tài khoản? Đăng nhập</template>
+        <template v-else>Chưa có tài khoản? Đăng ký</template>
       </button>
     </form>
   </div>
@@ -137,16 +136,41 @@ const authError = ref('')
 const authSuccess = ref('')
 const authBusy = ref(false)
 
+// Chỉ áp dụng các ràng buộc tài khoản mới khi đang ở màn đăng ký.
+const usernameRules = computed(() => {
+  if (isRegistering.value) {
+    return {
+      minlength: 3,
+      maxlength: 50,
+      pattern: '[A-Za-z0-9_.-]{3,50}',
+      title: '3–50 ký tự: chữ, số, dấu chấm, gạch dưới hoặc gạch ngang',
+    }
+  } else {
+    return {}
+  }
+})
+
+const passwordRules = computed(() => {
+  if (isRegistering.value) {
+    return { autocomplete: 'new-password', minlength: 8, maxlength: 128 }
+  } else {
+    return { autocomplete: 'current-password' }
+  }
+})
+
+// Dừng mọi đồng bộ, xóa token và reset store trước khi trở về màn đăng nhập.
 function clearSession() {
   stopSystem()
   setAccessToken('')
   user.value = null
   resetSystemState()
 }
+// Xử lý sự kiện auth-expired do HTTP/WebSocket báo phiên không còn hợp lệ.
 function sessionExpired() {
   clearSession()
   authError.value = 'Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'
 }
+// Đổi giữa đăng ký/đăng nhập và xóa mật khẩu, thông báo của form trước.
 function switchAuthMode() {
   isRegistering.value = !isRegistering.value
   password.value = ''
@@ -154,6 +178,7 @@ function switchAuthMode() {
   authError.value = ''
   authSuccess.value = ''
 }
+// Nhận submit form: đăng nhập nếu đang ở chế độ login, còn lại kiểm tra và gửi đăng ký.
 async function submitAuth() {
   if (authBusy.value) return
   if (!isRegistering.value) return login()
@@ -188,6 +213,7 @@ async function submitAuth() {
     authBusy.value = false
   }
 }
+// Gửi tài khoản tới API; lưu token, mở Dashboard và khởi động REST/WebSocket nếu thành công.
 async function login() {
   authBusy.value = true
   authError.value = ''
@@ -208,6 +234,7 @@ async function login() {
     authBusy.value = false
   }
 }
+// Thu hồi token ở backend trước, sau đó dọn phiên trên frontend; lỗi thì hiển thị thông báo.
 async function logout() {
   authBusy.value = true
   try {
@@ -219,6 +246,7 @@ async function logout() {
     authBusy.value = false
   }
 }
+// Khi tải lại trang, kiểm tra token đã lưu bằng API hồ sơ rồi mới bật đồng bộ hệ thống.
 onMounted(async () => {
   window.addEventListener('auth-expired', sessionExpired)
   if (!sessionStorage.getItem('accessToken')) return
@@ -230,6 +258,7 @@ onMounted(async () => {
     authError.value = error.message
   }
 })
+// Khi ứng dụng bị gỡ, hủy listener và các kết nối/timer để tránh tác vụ còn chạy.
 onUnmounted(() => {
   window.removeEventListener('auth-expired', sessionExpired)
   stopSystem()

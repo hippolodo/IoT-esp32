@@ -51,7 +51,7 @@ test('threshold save waits for ESP32 confirmation', async () => {
   } finally { stopSystem() }
 })
 
-test('alert counters restore from API and follow ESP32 snapshots without adding duplicates', async () => {
+test('alert counters restore from API and follow backend updates without adding duplicates', async () => {
   const sockets = mockOfflineDashboard(() => ok([]))
   const fetchSnapshot = globalThis.fetch
   globalThis.fetch = async (url, options) => url === '/api/alert-counts'
