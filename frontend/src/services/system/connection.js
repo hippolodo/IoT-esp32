@@ -95,7 +95,8 @@ export async function refreshDevices() {
   const session = captureSystemSession()
   const sequence = ++deviceSequence,
     revision = eventRevision
-  const devices = await api('/api/devices', { signal: session.signal })
+
+      const devices = await api('/api/devices', { signal: session.signal })
   if (session.isCurrent() && sequence === deviceSequence && revision === eventRevision) system.devices = devices
 }
 

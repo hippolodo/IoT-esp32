@@ -5,9 +5,9 @@
 #include "DHT.h"
 #include <stdlib.h>
 
-const char* ssid = "Phan Han(Tang 3)";           // Tên Wi-Fi phát từ Laptop
-const char* password = "68686868"; // Mật khẩu Wi-Fi
-const char* mqtt_server = "192.168.0.102"; // IP của Laptop (Broker)
+const char* ssid = "Hi";           // Tên Wi-Fi phát từ Laptop
+const char* password = "27112005"; // Mật khẩu Wi-Fi
+const char* mqtt_server = "172.20.10.4"; // IP của Laptop (Broker)
 const int mqtt_port = 1884;
 
 const char* mqtt_user = "B23DCCN294";
