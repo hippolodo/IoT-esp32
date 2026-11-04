@@ -1,19 +1,8 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../services/api.js'
-import { onSystemEvent } from '../services/system.js'
-
-const PAGE_REFRESH_MS = 10000
-const EVENT_DEBOUNCE_MS = 250
-
-// Logic dùng chung cho bảng số đo/lịch sử: gọi API có bộ lọc, phân trang và tự làm mới.
+// Logic dùng chung cho bảng số đo/lịch sử: gọi API có bộ lọc và phân trang.
 // Trả các ref/hàm để màn hình hiển thị; query() cung cấp bộ lọc đã áp dụng.
-export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH_MS } = {}) {
-  let eventTopics
-  if (Array.isArray(eventTopic)) {
-    eventTopics = eventTopic
-  } else {
-    eventTopics = [eventTopic]
-  }
+export function usePage(path, query) {
   const rows = ref([]),
     currentPage = ref(1),
     itemsPerPage = ref(10)
@@ -28,7 +17,6 @@ export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH
   let controller,
     active = true,
     sequence = 0
-  let unsubscribe, timer, poll
   // Hủy request cũ, lấy trang hiện tại và lưu content/tổng số trang; bỏ kết quả khi đã unmount.
   async function load() {
     controller?.abort()
@@ -71,24 +59,12 @@ export function usePage(path, query, eventTopic, { pollIntervalMs = PAGE_REFRESH
       load()
     }
   }
-  // Khi mở màn hình: tải ngay, bật polling và nghe sự kiện với debounce để tránh gọi API dồn dập.
-  onMounted(() => {
-    load()
-    if (pollIntervalMs > 0) poll = setInterval(load, pollIntervalMs)
-    if (eventTopic) unsubscribe = onSystemEvent((event) => {
-      if (eventTopics.includes(event.topic)) {
-        clearTimeout(timer)
-        timer = setTimeout(load, EVENT_DEBOUNCE_MS)
-      }
-    })
-  })
-  // Khi rời màn hình: hủy request, hủy đăng ký sự kiện và dừng toàn bộ timer của bảng.
+  // Tải một lần khi mở màn hình; các lần sau do thao tác của người dùng.
+  onMounted(load)
+  // Khi rời màn hình: hủy request để response cũ không cập nhật bảng.
   onUnmounted(() => {
     active = false
     controller?.abort()
-    unsubscribe?.()
-    clearTimeout(timer)
-    clearInterval(poll)
   })
   return {
     rows,

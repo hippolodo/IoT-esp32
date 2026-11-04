@@ -43,6 +43,71 @@ function setup(t) {
   return { snapshot, sockets }
 }
 
+test('periodic checks only request connection status while WebSocket updates live data', async t => {
+  const { snapshot, sockets } = setup(t)
+  let poll
+  t.mock.method(globalThis, 'setInterval', (callback, milliseconds) => {
+    assert.equal(milliseconds, 5000)
+    poll = callback
+    return 0
+  })
+  const requests = []
+  globalThis.fetch = async (url, options) => {
+    requests.push(url)
+    return snapshot(url, options)
+  }
+  startSystem()
+  await tick()
+  requests.length = 0
+  poll()
+  await tick()
+  assert.deepEqual(requests, ['/api/system/status'])
+
+  const message = (topic, data) => sockets[0].onmessage({ data: JSON.stringify({ topic, data }) })
+  requests.length = 0
+  message('/topic/alert-counts', { 1: 9 })
+  message('/topic/thresholds', { values: { temperature: 30 }, confirmed: { temperature: true } })
+  message('/topic/sensors', { temperature: 33 })
+  assert.equal(system.alertCounts[1], 9)
+  assert.equal(system.thresholds.temperature, 30)
+  assert.equal(system.sensors.temperature.value, 33)
+  assert.deepEqual(requests, [])
+  message('/topic/device-status', { deviceId: 1, status: 1, result: 'ON' })
+  assert.equal(system.devices[0].status, 1)
+  await tick()
+  assert.deepEqual(requests, ['/api/devices'])
+})
+
+test('WebSocket reconnection reloads snapshots missed during disconnection', async t => {
+  const { snapshot, sockets } = setup(t)
+  let reconnect
+  t.mock.method(globalThis, 'setTimeout', (callback, milliseconds) => {
+    assert.equal(milliseconds, 3000)
+    reconnect = callback
+    return 0
+  })
+  const requests = []
+  let total = 7
+  globalThis.fetch = async (url, options) => {
+    requests.push(url)
+    return url === '/api/alert-counts' ? ok({ 1: total }) : snapshot(url, options)
+  }
+  startSystem()
+  await tick()
+  sockets[0].onmessage({ data: JSON.stringify({ type: 'authenticated' }) })
+  await tick()
+  sockets[0].onclose({ code: 1006 })
+  total = 12
+  requests.length = 0
+  reconnect()
+  sockets[1].onmessage({ data: JSON.stringify({ type: 'authenticated' }) })
+  await tick()
+  assert.equal(system.realtime, true)
+  assert.equal(system.alertCounts[1], 12)
+  for (const url of ['/api/devices', '/api/sensors/latest', '/api/thresholds', '/api/alert-counts'])
+    assert.ok(requests.includes(url), `missing reconnect snapshot: ${url}`)
+})
+
 for (const response of ['success', 'failure']) {
   test(`late REST ${response} cannot overwrite a restarted session`, async t => {
     const { snapshot, sockets } = setup(t)

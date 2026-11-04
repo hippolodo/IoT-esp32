@@ -101,7 +101,7 @@
           <i class="fa-regular fa-lightbulb text-amber-500 mr-2 text-lg"></i>
           <h3 class="text-lg font-bold">Điều Khiển Đèn</h3>
         </div>
-        <p class="mb-4 text-xs text-gray-500">Mỗi số đo vượt ngưỡng được backend nhận và lưu lịch sử thành công tính 1 cảnh báo. Mất kết nối không đếm và không cộng bù khi kết nối lại.</p>
+        <p class="mb-4 text-xs text-gray-500">Mỗi số đo vượt ngưỡng được backend nhận và lưu lịch sử thành công tính 1 cảnh báo</p>
 
         <p v-if="!lamps.length" class="text-sm text-gray-500">Chưa có thiết bị.</p>
         <div v-if="lamps.length" class="grid grid-cols-2 gap-3 mb-4" :aria-busy="system.sendingAll">

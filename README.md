@@ -203,7 +203,11 @@ npm run build
 
 Kết quả được tạo trong `frontend/dist/`. Vite chuyển tiếp `/api` và `/ws` tới
 FastAPI cổng 8088; cần chạy cả hai server. WebSocket tự kết nối lại, REST đồng bộ
-trạng thái mỗi 5 giây. Hai bảng lọc/phân trang trên backend và tự cập nhật dữ liệu.
+trạng thái kết nối qua `/api/system/status` mỗi 5 giây. Thiết bị, số đo mới nhất, ngưỡng
+và tổng cảnh báo được lấy khi khởi động/kết nối lại WebSocket, sau đó nhận cập nhật qua
+WebSocket; trạng thái thiết bị được tải lại sau thao tác hoặc phản hồi điều khiển.
+Hai bảng lọc/phân trang trên backend; dữ liệu bảng chỉ tải khi mở
+màn hình, tải lại trang hoặc thao tác lọc, làm mới, đổi trang hay đổi số dòng.
 
 Frontend giữ đầu mối export tại `src/services/system.js`. Trong `src/services/system/`,
 `state.js` quản lý trạng thái và đăng ký sự kiện, `connection.js` quản lý REST polling,

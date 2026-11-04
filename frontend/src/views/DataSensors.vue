@@ -217,7 +217,6 @@ const {
     }
     return query
   },
-  '/topic/sensors',
 )
 const styles = {
   TEMPERATURE: ['fa-temperature-half', 'bg-red-100 text-red-600 border-red-200/50'],

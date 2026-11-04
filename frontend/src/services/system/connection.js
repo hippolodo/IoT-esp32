@@ -1,7 +1,7 @@
 import { api, websocketUrl, getAccessToken, expireSession } from '../api.js'
 import { system, applyThresholds, emitSystemEvent } from './state.js'
 
-const SYSTEM_REFRESH_MS = 5000
+const CONNECTION_REFRESH_MS = 5000
 const WEBSOCKET_RETRY_MS = 3000
 const MAX_CHART_POINTS = 30
 const SENSOR_KEYS = ['temperature', 'humidity', 'light']
@@ -10,7 +10,8 @@ let socket,
   retry,
   poll,
   running = false,
-  refreshing = null
+  refreshing = null,
+  checkingConnection = null
 let sessionController = new AbortController()
 let eventRevision = 0,
   deviceSequence = 0
@@ -99,7 +100,7 @@ export async function refreshDevices() {
 }
 
 // Lấy song song trạng thái kết nối, thiết bị, số đo mới nhất, ngưỡng và tổng cảnh báo.
-// Chạy khi khởi động và mỗi 5 giây; chỉ cập nhật nếu vẫn thuộc phiên đang hoạt động.
+// Chạy khi khởi động hoặc WebSocket kết nối lại; bỏ qua kết quả của phiên cũ.
 export async function refreshSystem() {
   if (refreshing?.isCurrent()) return
   const session = captureSystemSession()
@@ -134,6 +135,30 @@ export async function refreshSystem() {
       })
   } finally {
     if (refreshing === session) refreshing = null
+  }
+}
+
+// Chỉ kiểm tra kết nối định kỳ để phát hiện MQTT/ESP32 offline theo timeout backend.
+async function refreshConnectionStatus() {
+  if (checkingConnection?.isCurrent() || refreshing?.isCurrent()) return
+  const session = captureSystemSession()
+  checkingConnection = session
+  const revision = eventRevision
+  try {
+    const status = await api('/api/system/status', { signal: session.signal })
+    if (!running || !session.isCurrent()) return
+    Object.assign(system, { backendOnline: true, error: '' })
+    if (revision === eventRevision) Object.assign(system, status)
+  } catch (error) {
+    if (running && session.isCurrent())
+      Object.assign(system, {
+        backendOnline: false,
+        mqttConnected: false,
+        esp32Online: null,
+        error: error.message,
+      })
+  } finally {
+    if (checkingConnection === session) checkingConnection = null
   }
 }
 
@@ -214,7 +239,7 @@ function connect(session = captureSystemSession()) {
   connection.onerror = () => connection.close()
 }
 
-// App.vue gọi sau đăng nhập/khôi phục phiên: lấy snapshot, mở socket và bật polling.
+// Lấy snapshot ban đầu, nhận cập nhật qua WebSocket và chỉ kiểm tra kết nối định kỳ.
 export function startSystem() {
   if (running) return
   renewSystemSession()
@@ -224,9 +249,9 @@ export function startSystem() {
   refreshChartHistory()
   connect()
   poll = setInterval(() => {
-    refreshSystem()
+    refreshConnectionStatus()
     if (!chartHistoryLoaded && !system.chartLoading) refreshChartHistory()
-  }, SYSTEM_REFRESH_MS)
+  }, CONNECTION_REFRESH_MS)
 }
 
 // Dừng polling/reconnect, hủy request và đóng socket để phiên cũ không cập nhật giao diện.

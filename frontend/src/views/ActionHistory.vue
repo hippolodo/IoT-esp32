@@ -344,7 +344,6 @@ const {
     }
     return query
   },
-  ['/topic/device-status', '/topic/history'],
 )
 // Đổi dòng lịch sử API thành nội dung giao diện: hành động, trạng thái, GPIO và chi tiết vượt ngưỡng.
 const paginatedData = computed(() =>
