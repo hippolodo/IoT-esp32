@@ -158,8 +158,7 @@ def test_swagger_declares_bearer_auth_for_protected_routes(client):
 PROTECTED_GETS = [
     '/api/system/status', '/api/user/profile', '/api/devices', '/api/devices/1', '/api/alert-counts',
     '/api/sensors', '/api/sensors/latest', '/api/sensors/data',
-    '/api/sensors/filter?type=LIGHT&startDate=2026-10-21&endDate=2026-10-21',
-    '/api/history', '/api/history/filter?deviceId=1&status=SUCCESS',
+    '/api/history',
 ]
 
 
@@ -488,13 +487,9 @@ def test_date_filters(client):
                     for i, day in enumerate([16, 17, 18])])
     response = client.get('/api/sensors/data', params={'startTime': '2026-10-17', 'endTime': '2026-10-17'})
     assert response.json()['data']['totalElements'] == 1
-    response = client.get('/api/sensors/filter', params={
-        'type': 'TEMPERATURE', 'startDate': '2026-10-17 00:00:00', 'endDate': '2026-10-17 23:59:59'})
-    assert response.json()['data']['totalElements'] == 1
     for params in ({'startTime': '2026-10-17'}, {'startTime': 'bad', 'endTime': 'bad'},
                    {'startTime': '2026-10-18', 'endTime': '2026-10-17'}):
         assert client.get('/api/sensors/data', params=params).status_code == 400
-    assert client.get('/api/sensors/filter').status_code == 400
 
 
 def test_command_ack_updates_one_history(client, connected):
@@ -511,8 +506,7 @@ def test_command_ack_updates_one_history(client, connected):
     assert history['totalElements'] == 1
     assert history['content'][0]['status'] == 'SUCCESS'
     assert history['content'][0]['userId'] == 1
-    assert client.get('/api/history/filter?deviceId=1&status=SUCCESS').json()['data']['totalElements'] == 1
-    assert client.get('/api/history/filter').status_code == 400
+    assert client.get('/api/history', params={'deviceId': 1, 'status': 'SUCCESS'}).json()['data']['totalElements'] == 1
 
 
 def test_retained_and_failed_status(client, connected):

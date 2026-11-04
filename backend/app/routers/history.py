@@ -32,26 +32,3 @@ def history(
         db=db,
     )
     return envelope(result, 'Lấy lịch sử thành công')
-
-
-# GET /api/history/filter: lọc lịch sử theo tham số của endpoint cũ.
-@router.get('/api/history/filter', tags=['Lịch sử'], dependencies=[Depends(current_session)])
-def filter_history(
-    deviceId: int | None = None,
-    status: str | None = None,
-    startTime: str | None = None,
-    endTime: str | None = None,
-    page: int = 0,
-    size: int = 10,
-    db: Session = Depends(database),
-):
-    result = service.filter_history(
-        deviceId=deviceId,
-        status=status,
-        startTime=startTime,
-        endTime=endTime,
-        page=page,
-        size=size,
-        db=db,
-    )
-    return envelope(result, 'Lọc lịch sử thành công')

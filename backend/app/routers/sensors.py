@@ -51,24 +51,3 @@ def sensor_data(
         db=db,
     )
     return envelope(result, 'Lấy dữ liệu cảm biến thành công')
-
-
-# GET /api/sensors/filter: giữ endpoint lọc số đo tương thích với API cũ.
-@router.get('/api/sensors/filter', tags=['Cảm biến'], dependencies=[Depends(current_session)])
-def filter_sensors(
-    type: str,
-    startDate: str,
-    endDate: str,
-    page: int = 0,
-    size: int = 10,
-    db: Session = Depends(database),
-):
-    result = service.filter_sensors(
-        type=type,
-        startDate=startDate,
-        endDate=endDate,
-        page=page,
-        size=size,
-        db=db,
-    )
-    return envelope(result, 'Lọc dữ liệu cảm biến thành công')

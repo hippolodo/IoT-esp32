@@ -218,9 +218,7 @@ khi gọi các API được bảo vệ, gồm cả GET. Sau khi đăng xuất, b
 | GET | `/api/sensors/latest` | Giá trị gần nhất của từng cảm biến |
 | GET | `/api/sensors/chart` | `limit` mặc định 30, từ 1–30; ghép các cảm biến theo mốc giây, trả từ cũ đến mới, hoạt động cả khi ESP32 offline |
 | GET | `/api/sensors/data` | `sensorId,startTime,endTime,page,size` tùy chọn |
-| GET | `/api/sensors/filter` | Bắt buộc `type,startDate,endDate`; `page,size` tùy chọn |
 | GET | `/api/history` | `deviceId,status,startTime,endTime,page,size` tùy chọn |
-| GET | `/api/history/filter` | Bắt buộc `deviceId,status`; thời gian/phân trang tùy chọn |
 | GET | `/api/thresholds` | Trả `values` và `confirmed` cho ba ngưỡng |
 | POST | `/api/thresholds` | `{"temperature":35,"humidity":80,"light":3000}` |
 

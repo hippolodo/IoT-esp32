@@ -293,9 +293,7 @@ nháy khi vượt ngưỡng. Ngưỡng chỉ báo đã xác nhận sau khi ESP32
 | GET | `/api/sensors` | Danh sách cảm biến |
 | GET | `/api/sensors/latest` | Giá trị mới nhất của từng cảm biến |
 | GET | `/api/sensors/data` | Dữ liệu đo có lọc/phân trang |
-| GET | `/api/sensors/filter` | Lọc theo loại và khoảng thời gian |
 | GET | `/api/history` | Lịch sử có lọc/phân trang |
-| GET | `/api/history/filter` | Lọc lịch sử thiết bị |
 
 Body điều khiển:
 

@@ -1,6 +1,6 @@
 """Sensor catalog, measurements and chart history using parameterized SQL."""
 from sqlalchemy.orm import Session
-from ..contracts import data_dict, execute_sql, paginate, parse_date, sensor_dict, time_range
+from ..contracts import data_dict, execute_sql, paginate, sensor_dict, time_range
 
 MEASUREMENTS_SQL = """
     SELECT ds.id, ds.sensor_id, ds.value, ds.recorded_at,
@@ -93,18 +93,3 @@ def sensor_data(
         params.update(start=start, end=end)
     sql += ' ORDER BY ds.recorded_at DESC, ds.id DESC'
     return paginate(db, sql, params, page, size, data_dict)
-
-
-# Endpoint lọc tương thích API cũ: bắt buộc loại và hai mốc thời gian, gồm cả hai đầu.
-def filter_sensors(
-    db: Session, type: str, startDate: str, endDate: str, page: int = 0, size: int = 10,
-):
-    start, end = parse_date(startDate), parse_date(endDate)
-    if start > end:
-        raise ValueError("startDate phải nhỏ hơn hoặc bằng endDate")
-    sql = MEASUREMENTS_SQL + """
-        WHERE s.type = :sensor_type AND UPPER(s.type) IN ('TEMPERATURE', 'HUMIDITY', 'LIGHT')
-          AND ds.recorded_at >= :start AND ds.recorded_at <= :end
-        ORDER BY ds.recorded_at DESC, ds.id DESC
-    """
-    return paginate(db, sql, {'sensor_type': type, 'start': start, 'end': end}, page, size, data_dict)
